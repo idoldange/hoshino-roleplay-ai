@@ -1,0 +1,50 @@
+# Byte-compiled / Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments
+.env
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# Database & Local storage
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Models, Checkpoints & Large Data
+*.bin
+*.onnx
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+/models/
+/checkpoints/
+
+# IDE & Editor configs
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Node.js (nếu có làm dashboard/web/bot frontend)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Docker / Temporary runtime
+.dockerignore
+*.tmp
+temp/
+tmp/
