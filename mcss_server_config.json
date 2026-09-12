@@ -1,0 +1,26 @@
+{
+  "guid": "56074f2d-3057-42ad-a1c3-f8efc9c030ed",
+  "serverTypeGuid": "b023dbff-1a2e-4fee-aa8f-244ed3ab689e",
+  "name": "hoshino",
+  "description": "",
+  "creationDate": "2026-09-06T11:51:14.8348523+07:00",
+  "autostart": true,
+  "forceSaveOnStop": true,
+  "stopPrevention": "None",
+  "startupMethode": "JavaStartupLine",
+  "allocatedMemory": 32768,
+  "allocatedMemorySuffix": "GB",
+  "startupLine": "bot.py",
+  "startupBatFilename": null,
+  "serverFileChecksum": "",
+  "serverFileVersion": "",
+  "javaPathOverride": "C:\\Users\\Minh Tam\\AppData\\Local\\Microsoft\\WindowsApps\\python.exe",
+  "tasks": {
+    "scheduledTasks": []
+  },
+  "backups": {
+    "backupTemplates": [],
+    "backupHistory": []
+  },
+  "subServers": []
+}

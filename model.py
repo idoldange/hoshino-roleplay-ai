@@ -1,0 +1,417 @@
+import json
+import re
+from types import SimpleNamespace
+
+import discord
+
+import config
+from client import client_ai, db
+from context import build_messages_from_channel
+from formatting import split_message
+from logger import logger
+from tools import TOOLS_SCHEMA, execute_tool_call
+from affection import affection
+
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+IGNORE_REPLY = "<!-- ignore -->"
+_CONTROL_TAG_RE = re.compile(
+    r"<mood>.*?</mood>|<shocked>.*?</shocked>|<aroused\s*/>|"
+    r"<lust_change\s+amount\s*=\s*['\"][+-]?\d+(?:\.\d+)?['\"]\s*/>|<lust\s*/>",
+    re.IGNORECASE | re.DOTALL,
+)
+_CONTROL_TAG_OPEN_RE = re.compile(r"<(?:mood|shocked|aroused|lust_change|lust)\b", re.IGNORECASE)
+_CONTROL_TAG_PREFIXES = ("<mood", "<shocked", "<aroused", "<lust_change", "<lust")
+
+
+class _ControlTagFilter:
+    """Remove affection control tags while preserving streaming output."""
+
+    def __init__(self):
+        self._pending = ""
+
+    def feed(self, text: str) -> str:
+        self._pending += text or ""
+        visible = []
+        cursor = 0
+
+        while cursor < len(self._pending):
+            opening = _CONTROL_TAG_OPEN_RE.search(self._pending, cursor)
+            if not opening:
+                safe_end = len(self._pending)
+                for index in range(cursor, len(self._pending)):
+                    suffix = self._pending[index:].lower()
+                    if any(prefix.startswith(suffix) for prefix in _CONTROL_TAG_PREFIXES):
+                        safe_end = index
+                        break
+                visible.append(self._pending[cursor:safe_end])
+                self._pending = self._pending[safe_end:]
+                return "".join(visible)
+
+            visible.append(self._pending[cursor:opening.start()])
+            closing = _CONTROL_TAG_RE.match(self._pending, opening.start())
+            if not closing:
+                self._pending = self._pending[opening.start():]
+                return "".join(visible)
+            cursor = closing.end()
+
+        self._pending = ""
+        return "".join(visible)
+
+    def finish(self) -> str:
+        text = self._pending
+        self._pending = ""
+        return _CONTROL_TAG_RE.sub("", text)
+
+
+def split_reasoning(raw_content: str, existing_reasoning: str | None = None):
+    """Tách phần <think>...</think> còn sót (nếu có) khỏi content, gộp với reasoning
+    đã buffer được từ stream (existing_reasoning, tức delta.reasoning_content cộng dồn)."""
+    reasoning = existing_reasoning
+
+    content = raw_content or ""
+    m = config.THINK_TAG_RE.search(content)
+    if m:
+        extracted = m.group(1).strip()
+        reasoning = f"{reasoning}\n{extracted}" if reasoning else extracted
+        content = (content[: m.start()] + content[m.end():]).strip()
+
+    return content, reasoning
+
+
+async def _safe_send(channel, content, reply_message=None, on_first_send=None):
+    """Gửi message với retry logic khi gặp lỗi message_reference không hợp lệ.
+    
+    Args:
+        channel: discord.abc.Messageable - kênh gửi tin nhắn
+        content: str - nội dung tin nhắn
+        reply_message: discord.Message | None - tin nhắn để reply (có thể None)
+        on_first_send: callable | None - callback khi gửi tin nhắn đầu tiên
+        
+    Returns:
+        bool - True nếu gửi thành công, False nếu thất bại
+    """
+    if on_first_send is not None:
+        on_first_send()
+        on_first_send = None
+    
+    if reply_message is not None:
+        try:
+            await reply_message.reply(content)
+            return True
+        except discord.errors.HTTPException as e:
+            if e.code == 50035:  # Invalid Form Body - Unknown message
+                logger.warning(
+                    "Không thể reply vì message_reference không hợp lệ (code 50035), "
+                    "sẽ gửi tin nhắn thường thay thế. Error: %s", e
+                )
+                # Retry without message reference
+                try:
+                    await channel.send(content)
+                    # Reset reply_message sau khi retry thành công
+                    return True
+                except Exception as e2:
+                    logger.error("Lỗi khi gửi tin nhắn thường: %s", e2)
+                    return False
+            else:
+                logger.error("Lỗi HTTPException khi reply: %s", e)
+                return False
+    else:
+        try:
+            await channel.send(content)
+            return True
+        except Exception as e:
+            logger.error("Lỗi khi gửi tin nhắn thường: %s", e)
+            return False
+
+
+async def _flush_lines(channel, buf: str, send_state: dict) -> tuple[str, bool]:
+    """Gửi từng dòng đã hoàn chỉnh (kết thúc bằng \\n) trong buf tới channel.
+    Trả về (phần dư chưa xuống dòng, đã gửi được dòng nào chưa)."""
+    sent = False
+    while "\n" in buf:
+        line, buf = buf.split("\n", 1)
+        if line.strip() and line.strip() != IGNORE_REPLY:
+            for part in split_message(line, 1900):
+                if send_state["on_first_send"] is not None:
+                    send_state["on_first_send"]()
+                    send_state["on_first_send"] = None
+                if send_state["reply_message"] is not None:
+                    if not await _safe_send(channel, part, send_state["reply_message"], send_state["on_first_send"]):
+                        send_state["reply_message"] = None
+                    else:
+                        send_state["reply_message"] = None  # Reset sau khi retry thành công
+                else:
+                    await channel.send(part)
+            sent = True
+    return buf, sent
+
+
+async def call_model(
+    channel: discord.abc.Messageable,
+    user_text: str,
+    author,
+    image_parts=None,
+    message_id=None,
+    stream_reply: bool = False,
+    nsfw: bool = False,
+    reply_message=None,
+    on_first_send=None,
+    affection_context=None,
+    reply_context=None,
+):
+    """
+    stream_reply=False (mặc định): hành vi y hệt bản cũ — trả về (reply, messages)
+    đầy đủ, KHÔNG tự gửi gì lên channel. Giữ nguyên để không phá các chỗ khác
+    đang gọi call_model mà chưa cập nhật theo API mới.
+
+    stream_reply=True: nội dung được stream từ API, mỗi khi gặp ký tự xuống dòng
+    sẽ gửi ngay 1 tin nhắn Discord. Nếu model yêu cầu tool call, KHÔNG stream gì
+    cho vòng đó — đợi nhận đủ full tool call rồi mới xử lý, đúng yêu cầu
+    tool-calling. Phần reasoning (từ delta.reasoning_content HOẶC từ thẻ
+    <think>...</think> lồng trong content) không bao giờ bị gửi ra Discord —
+    được buffer lại và save vào db.save_reasoning đúng 1 lần sau khi stream xong.
+    """
+    messages = await build_messages_from_channel(
+        channel, user_text, author, image_parts=image_parts, message_id=message_id,
+        enable_nsfw=nsfw, affection_context=affection_context, reply_context=reply_context,
+    )
+    logger.info(
+        "call_model bắt đầu: author=%s (%s) channel=%s len(user_text)=%d ảnh=%d",
+        author, author.id, channel.id, len(user_text), len(image_parts or []),
+    )
+    typing_manager = channel.typing()
+    await typing_manager.__aenter__()
+    use_tools = True
+    #log prompt
+    for iteration in range(config.MAX_TOOL_ITER):
+        create_kwargs = dict(
+            model=config.MODEL_NAME,
+            messages=messages,
+            temperature=0.7,
+            stream=True,
+        )
+        if use_tools:
+            create_kwargs.update(tools=TOOLS_SCHEMA, tool_choice="auto", reasoning_effort="minimal")
+
+        try:
+            stream = await client_ai.chat.completions.create(**create_kwargs)
+        except Exception as e:
+            if use_tools:
+                logger.warning("Backend không nhận tool calling (%s), thử lại không kèm tools.", e)
+                use_tools = False
+                continue
+            logger.exception("call_model lỗi khi gọi API cho author=%s channel=%s", author.id, channel.id)
+            raise e
+
+        content_buf = ""
+        reasoning_buf = ""  # buffer riêng cho delta.reasoning_content, chỉ save 1 lần ở cuối
+        tool_call_chunks: dict[int, dict] = {}
+        line_buf = ""
+        sent_any = False
+        send_state = {"reply_message": reply_message, "on_first_send": on_first_send}
+        control_filter = _ControlTagFilter()
+        in_think: bool | None = None  # None = chưa xác định, True = đang trong <think>
+
+        try:
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                choice0 = chunk.choices[0]
+                delta = choice0.delta
+
+                # buffer reasoning_content trả riêng field (không phải lồng trong <think>)
+                delta_reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                if delta_reasoning:
+                    reasoning_buf += delta_reasoning
+
+                delta_tool_calls = getattr(delta, "tool_calls", None)
+                if delta_tool_calls:
+                    for tc_delta in delta_tool_calls:
+                        idx = getattr(tc_delta, "index", 0) or 0
+                        entry = tool_call_chunks.setdefault(idx, {"id": None, "name": None, "arguments": ""})
+                        if getattr(tc_delta, "id", None):
+                            entry["id"] = tc_delta.id
+                        fn = getattr(tc_delta, "function", None)
+                        if fn is not None:
+                            if getattr(fn, "name", None):
+                                entry["name"] = fn.name
+                            if getattr(fn, "arguments", None):
+                                entry["arguments"] += fn.arguments
+
+                delta_content = delta.content or ""
+                if delta_content:
+                    content_buf += delta_content
+
+                    # Content vẫn được stream nếu cùng lượt có tool call. Tool call
+                    # chỉ cần đợi đủ arguments; text thì gửi theo pipeline bình thường.
+                    if stream_reply:
+                        if in_think is None:
+                            probe = content_buf.lstrip()
+                            if probe.startswith(_THINK_OPEN):
+                                in_think = True
+                            elif len(probe) >= len(_THINK_OPEN) or (probe and not _THINK_OPEN.startswith(probe)):
+                                in_think = False
+                                line_buf += control_filter.feed(content_buf)
+                                line_buf, did_send = await _flush_lines(channel, line_buf, send_state)
+                                sent_any = sent_any or did_send
+                            # else: chưa đủ ký tự để biết chắc <think> hay không, chờ delta tiếp
+
+                        elif in_think:
+                            if _THINK_CLOSE in content_buf:
+                                open_idx = content_buf.index(_THINK_OPEN)
+                                close_idx = content_buf.index(_THINK_CLOSE)
+                                extracted = content_buf[open_idx + len(_THINK_OPEN): close_idx].strip()
+                                if extracted:
+                                    # gộp vào cùng buffer reasoning, save chung 1 lần ở cuối
+                                    reasoning_buf = f"{reasoning_buf}\n{extracted}" if reasoning_buf else extracted
+                                after = content_buf[close_idx + len(_THINK_CLOSE):]
+                                in_think = False
+                                line_buf += control_filter.feed(after)
+                                line_buf, did_send = await _flush_lines(channel, line_buf, send_state)
+                                sent_any = sent_any or did_send
+                            # else: vẫn đang trong đoạn suy luận -> không gửi gì, chỉ buffer
+
+                        else:
+                            line_buf += control_filter.feed(delta_content)
+                            line_buf, did_send = await _flush_lines(channel, line_buf, send_state)
+                            sent_any = sent_any or did_send
+        except Exception:
+            logger.exception("Lỗi khi đọc stream cho author=%s channel=%s", author.id, channel.id)
+            raise
+
+        # Gộp reasoning_buf (đã cộng dồn suốt stream) với mọi <think> còn sót lại
+        # trong content_buf (phòng trường hợp không rơi vào nhánh live-detect ở trên,
+        # ví dụ stream_reply=False), rồi save DB đúng 1 lần.
+        clean_content, reasoning = split_reasoning(content_buf, reasoning_buf or None)
+        if reasoning:
+            await db.save_reasoning(author.id, channel.id, reasoning)
+            logger.debug("Đã lưu reasoning cho channel=%s (%d ký tự)", channel.id, len(reasoning))
+
+        if not tool_call_chunks:
+            # Không có tool call -> đây là câu trả lời cuối cùng của vòng lặp.
+            final_reply = affection.parse_and_apply_mood_tag(clean_content, nsfw=nsfw).strip() or "..."
+            
+            # Parse lust_change tags
+            lust_change, lust_reset = affection.parse_lust_change_tag(final_reply)
+            if lust_change != 0.0:
+                if lust_change > 0:
+                    await affection.increment_lust(author.id, lust_change)
+                    logger.info("[lust] Incremented lust for user=%s by %+g", author.id, lust_change)
+                else:
+                    await affection.decrement_lust(author.id, abs(lust_change))
+                    logger.info("[lust] Decremented lust for user=%s by %+g", author.id, abs(lust_change))
+            
+            if lust_reset:
+                await affection.reset_lust(author.id)
+                logger.info("[lust] Reset lust for user=%s (climax)", author.id)
+
+            final_reply = affection.strip_lust_tags(final_reply).strip() or "..."
+
+            if stream_reply:
+                line_buf += control_filter.finish()
+                # Gửi nốt phần dư cuối (dòng không có \n kết thúc).
+                if line_buf.strip() and line_buf.strip() != IGNORE_REPLY:
+                    for part in split_message(line_buf, 1900):
+                        if send_state["reply_message"] is not None:
+                            if not await _safe_send(channel, part, send_state["reply_message"], send_state["on_first_send"]):
+                                send_state["reply_message"] = None
+                            else:
+                                send_state["reply_message"] = None  # Reset sau khi retry thành công
+                        else:
+                            await channel.send(part)
+                    sent_any = True
+                # Fallback: nếu suốt quá trình stream chưa gửi được gì (vd model chỉ
+                # trả <think> không đóng thẻ, hoặc nội dung rỗng) thì gửi nguyên câu
+                # trả lời cuối để Sensei không bị bỏ rơi.
+                if not sent_any and final_reply != IGNORE_REPLY:
+                    for part in split_message(final_reply, 1900):
+                        if send_state["on_first_send"] is not None:
+                            send_state["on_first_send"]()
+                            send_state["on_first_send"] = None
+                        if send_state["reply_message"] is not None:
+                            if not await _safe_send(channel, part, send_state["reply_message"], send_state["on_first_send"]):
+                                send_state["reply_message"] = None
+                            else:
+                                send_state["reply_message"] = None  # Reset sau khi retry thành công
+                        else:
+                            await channel.send(part)
+            await typing_manager.__aexit__(None, None, None)
+            logger.info(
+                "call_model xong sau %d vòng lặp, len(reply)=%d",
+                iteration + 1, len(final_reply),
+            )
+            return final_reply, messages
+
+        if stream_reply:
+            line_buf += control_filter.finish()
+            if line_buf.strip() and line_buf.strip() != IGNORE_REPLY:
+                for part in split_message(line_buf, 1900):
+                    if send_state["on_first_send"] is not None:
+                        send_state["on_first_send"]()
+                        send_state["on_first_send"] = None
+                    if send_state["reply_message"] is not None:
+                        if not await _safe_send(channel, part, send_state["reply_message"], send_state["on_first_send"]):
+                            send_state["reply_message"] = None
+                        else:
+                            send_state["reply_message"] = None  # Reset sau khi retry thành công
+                    else:
+                        await channel.send(part)
+                sent_any = True
+
+        tool_calls = [
+            SimpleNamespace(
+                id=entry["id"],
+                function=SimpleNamespace(name=entry["name"], arguments=entry["arguments"]),
+            )
+            for _, entry in sorted(tool_call_chunks.items())
+        ]
+
+        logger.info(
+            "Model yêu cầu %d tool call(s) ở vòng %d: %s",
+            len(tool_calls), iteration + 1, [tc.function.name for tc in tool_calls],
+        )
+
+        messages.append(
+            {
+                "role": "assistant",
+                "content": clean_content,
+                **({"reasoning_content": reasoning} if reasoning else {}),
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                    }
+                    for tc in tool_calls
+                ],
+            }
+        )
+
+        for tc in tool_calls:
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            if tc.function.name == "increase_output_tokens":
+                requested_tokens = int(args.get("max_tokens", max_output_tokens) or max_output_tokens)
+                requested_tokens = max(max_output_tokens, requested_tokens)
+                max_output_tokens = min(requested_tokens, config.MAX_OUTPUT_TOKENS_LIMIT)
+                logger.info("Model chủ động tăng max_tokens lên %d", max_output_tokens)
+            guild_id = channel.guild.id if getattr(channel, "guild", None) else None
+            result = await execute_tool_call(tc.function.name, args, author.id, channel_id=channel.id, guild_id=guild_id)
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+
+    logger.warning(
+        "call_model vượt quá MAX_TOOL_ITER=%d, ép trả lời fallback (author=%s channel=%s)",
+        config.MAX_TOOL_ITER, author.id, channel.id,
+    )
+    fallback_reply = "Uhe~... hơi rối quá, để em nghỉ xíu đã ha Sensei, hỏi lại em sau nhé."
+    if stream_reply:
+        for part in split_message(fallback_reply, 1900):
+            if reply_message is not None:
+                if not await _safe_send(channel, part, reply_message, on_first_send):
+                    reply_message = None
+            else:
+                await channel.send(part)
+    return fallback_reply, messages
