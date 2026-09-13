@@ -82,7 +82,7 @@ def get_memory_reflection_system_prompt(allow_h_preference: bool = False) -> str
 Pacing — độ dài mặc định, mức độ chi tiết, khi nào nên ngắn hay giải thích kỹ.
 Language — ngôn ngữ, cách trộn ngôn ngữ, mức độ trang trọng và vốn từ.
 Tone — sắc thái cảm xúc mặc định như trực tiếp, vui, khô, ấm áp.
-H-Preference — thái độ với hành vi H/NSFW, fetish đã được người dùng nói rõ, lời hứa hoặc ranh giới nhạy cảm hiện tại.
+H-Preference — thái độ với hành vi H/NSFW, fetish đã được người dùng nói rõ, lời hứa hoặc ranh giới nhạy cảm hiện tại. Nếu không có trong personalization note cũ và không đủ context để viết thì ghi là 'null'.
 """
     else:
         output_instructions = """Output đúng ba section sau, mỗi section 1-3 câu và viết như chỉ dẫn cho Hoshino. Dùng đúng format mỗi section một dòng, không markdown và không thêm dòng nào khác:
