@@ -29,10 +29,11 @@ from affection.experience import experience as _experience
 from logger import logger
 
 _MOOD_TAG_RE = re.compile(
-    r"<mood>\s*(?P<v1>[+-]?\d+(?:\.\d+)?)\s*</mood>"   # canonical:  <mood>-5</mood>
+    r"<mood>\s*(?P<v1>[+-]?\d+(?:\.\d+)?)\s*</mood>"    # canonical:  <mood>-5</mood>
     r"|</mood>\s*\[(?P<v2>[+-]?\d+(?:\.\d+)?)\]"        # malformed:  </mood>[-5]
     r"|</mood>\s*(?P<v3>[+-]?\d+(?:\.\d+)?)>"           # malformed:  </mood>-5>
-    r"|</mood>\s*(?P<v4>[+-]?\d+(?:\.\d+)?)\s*</mood>", # malformed:  </mood>25</mood>
+    r"|</mood>\s*(?P<v4>[+-]?\d+(?:\.\d+)?)\s*</mood>"  # malformed:  </mood>25</mood>
+    r"|<mood\s*(?P<v5>[+-]?\d+(?:\.\d+)?)\s*/?>",       # malformed:  <mood+10/> (Thay \s*> thành \s*)
     re.IGNORECASE,
 )
 
