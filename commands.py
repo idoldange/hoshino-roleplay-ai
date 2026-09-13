@@ -104,7 +104,7 @@ async def handle_command(message: discord.Message, user_text: str) -> bool:
         lust_bar = make_bar(lust, 100.0, 10)
         parts = [ 
             f"{mood_emoji} Mood: {mood_label} ({affection.get_mood():.1f})\n> {mood_desc}",
-            f"💕 Bond: {bond_bar} {bond:.1f} ({bond_rank})",
+            f"💕 Bond: {bond_bar} {int(bond)}/100",
         ]
         if message.guild is None or bool(getattr(message.channel, "nsfw", False)):
             aroused_emoji = await affection.get_aroused_emoji(message.author.id)

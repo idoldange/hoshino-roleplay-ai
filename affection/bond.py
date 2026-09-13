@@ -31,6 +31,10 @@ _pending_flushes: set = set()
 # Minimum cache size threshold — if cache is this small, something went wrong
 _EXPECTED_CACHE_SIZE = 70
 
+# Model-generated bond events are intentionally small and infrequent.
+MAX_EVENT_INCREASE = 25.0
+MAX_EVENT_DECREASE = 5.0
+
 # Helpers
 
 def _rank_info(bond: float) -> tuple[str, float]:
@@ -215,13 +219,11 @@ def add_and_get(user_id: int, delta: float) -> float:
     with _cache_lock:
         logger.debug("[bond] add_and_get() START: user=%s, delta=%.2f, cache_size=%s", user_id, delta, len(_cache))
         current = _cache.get(user_id, 0.0)
-        if delta <= 0:
-            logger.debug("[bond] add_and_get: delta=%.2f <= 0, skipping (current=%.2f)", delta, current)
-            return current
-        new_val = min(100.0, current + delta)
+        delta = max(-MAX_EVENT_DECREASE, min(MAX_EVENT_INCREASE, float(delta)))
+        new_val = max(0.0, min(100.0, current + delta))
         _cache[user_id] = new_val
         cache_size = len(_cache)
-        logger.debug("[bond] add_and_get: user=%s +%.2f (was %.2f) -> %.2f, cache_size=%s", user_id, delta, current, new_val, cache_size)
+        logger.debug("[bond] add_and_get: user=%s %+0.2f (was %.2f) -> %.2f, cache_size=%s", user_id, delta, current, new_val, cache_size)
     
     # Fire-and-forget DB write, but track it
     task = asyncio.create_task(_flush(user_id, new_val))
@@ -237,13 +239,12 @@ async def add_and_get_immediate(user_id: int, delta: float) -> float:
     Use this when you need guaranteed persistence (e.g., per message).
     """
     user_id = int(user_id)
-    if delta <= 0:
-        return get(user_id)
     with _cache_lock:
         current = _cache.get(user_id, 0.0)
-        new_val = min(100.0, current + delta)
+        delta = max(-MAX_EVENT_DECREASE, min(MAX_EVENT_INCREASE, float(delta)))
+        new_val = max(0.0, min(100.0, current + delta))
         _cache[user_id] = new_val
-        logger.debug("[bond] User %s: +%.2f -> %.2f", user_id, delta, new_val)
+        logger.debug("[bond] User %s: %+0.2f -> %.2f", user_id, delta, new_val)
     # Blocking DB write — await it
     await _flush(user_id, new_val)
     return new_val

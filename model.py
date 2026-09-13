@@ -17,11 +17,12 @@ _THINK_CLOSE = "</think>"
 IGNORE_REPLY = "<!-- ignore -->"
 _CONTROL_TAG_RE = re.compile(
     r"<mood>.*?</mood>|<shocked>.*?</shocked>|<aroused\s*/>|"
-    r"<lust_change\s+amount\s*=\s*['\"][+-]?\d+(?:\.\d+)?['\"]\s*/>|<lust\s*/>",
+    r"<lust_change\s+amount\s*=\s*['\"][+-]?\d+(?:\.\d+)?['\"]\s*/>|<lust\s*/>|"
+    r"<bond_change\b[^>]*?/\s*>",
     re.IGNORECASE | re.DOTALL,
 )
-_CONTROL_TAG_OPEN_RE = re.compile(r"<(?:mood|shocked|aroused|lust_change|lust)\b", re.IGNORECASE)
-_CONTROL_TAG_PREFIXES = ("<mood", "<shocked", "<aroused", "<lust_change", "<lust")
+_CONTROL_TAG_OPEN_RE = re.compile(r"<(?:mood|shocked|aroused|lust_change|lust|bond_change)\b", re.IGNORECASE)
+_CONTROL_TAG_PREFIXES = ("<mood", "<shocked", "<aroused", "<lust_change", "<lust", "<bond_change")
 
 
 class _ControlTagFilter:
@@ -291,6 +292,7 @@ async def call_model(
         if not tool_call_chunks:
             # Không có tool call -> đây là câu trả lời cuối cùng của vòng lặp.
             final_reply = affection.parse_and_apply_mood_tag(clean_content, nsfw=nsfw).strip() or "..."
+            final_reply = affection.parse_and_apply_bond_tag(final_reply, author.id).strip() or "..."
             
             # Parse lust_change tags
             lust_change, lust_reset = affection.parse_lust_change_tag(final_reply)

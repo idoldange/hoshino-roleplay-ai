@@ -64,14 +64,15 @@ AFFECTION_DB_PATH = _database_path(os.environ.get("AFFECTION_DB_PATH", DB_PATH))
 AFFECTION_BASE_EXP_MIN = float(os.environ.get("AFFECTION_BASE_EXP_MIN", "0.8"))
 AFFECTION_BASE_EXP_MAX = float(os.environ.get("AFFECTION_BASE_EXP_MAX", "1.2"))
 AFFECTION_RANKS = (
-    (0, 10, "Unregistered", 1.00),
-    (10, 25, "New Contact", 0.75),
-    (25, 45, "Schale Associate", 0.55),
-    (45, 60, "Trusted Sensei", 0.38),
-    (60, 75, "Kivotos Partner", 0.25),
-    (75, 90, "Shittim Core", 0.14),
-    (90, 100, "Hoshino's Sensei", 0.07),
-    (100, 101, "Hoshino's Closest Sensei", 0.00),
+   #(Min, Max,   Description for AI,                                                           Multiplier)
+    (0,    10,   "Người lạ - Xã giao lịch sự, giữ khoảng cách",                                      1.00),
+    (10,   25,   "Quen biết - Lười biếng, trêu chọc xã giao",                                        0.75),
+    (25,   45,   "Bạn bớt lạ - Thoải mái rủ rê trốn việc cùng",                                      0.55),
+    (45,   60,   "Sensei đáng tin - Coi là người lớn dựa dẫm được, nhưng vẫn giấu quá khứ",          0.38),
+    (60,   75,   "Ranh giới mở lòng - Bắt đầu rạn nứt bức tường tâm lý, phụ thuộc ngầm",             0.25),
+    (75,   90,   "Điểm tựa quý giá - Mở lòng hoàn toàn.",                                            0.14),
+    (90,   100,  "Tri kỷ không thể thay thế - Được chữa lành tổn thương quá khứ, gắn bó tuyệt đối",  0.07),
+    (100,  101,  "Báu vật quan trọng nhất của Hoshino",                                              0.00),
 )
 
 AFFECTION_MOOD_LEVELS = (
@@ -79,7 +80,7 @@ AFFECTION_MOOD_LEVELS = (
     (-60, -20, "unhappy", "Hoshino is feeling unhappy."),
     (-20, 20, "neutral", "Hoshino is in her usual composed state."),
     (20, 60, "cheerful", "Hoshino is feeling cheerful."),
-    (60, 100, "happy", "Hoshino is feeling very happy."),
+    (60, 101, "happy", "Hoshino is feeling very happy."),
 )
 AFFECTION_TICK_INTERVAL = float(os.environ.get("AFFECTION_TICK_INTERVAL", "30"))
 AFFECTION_SLEEP_AFTER = float(os.environ.get("AFFECTION_SLEEP_AFTER", "300"))

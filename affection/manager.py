@@ -44,6 +44,12 @@ _SHOCKED_TAG_RE = re.compile(
 
 _AROUSED_TAG_RE = re.compile(r"<aroused\s*/>", re.IGNORECASE)
 
+_BOND_CHANGE_TAG_RE = re.compile(
+    r'<bond_change\s+amount=["\'](?P<amount>[+-]?\d+(?:\.\d+)?)["\']\s*/>',
+    re.IGNORECASE,
+)
+_BOND_TAG_STRIP_RE = re.compile(r'<bond_change\b[^>]*?/\s*>', re.IGNORECASE)
+
 
 class AffectionManager:
 
@@ -159,6 +165,40 @@ class AffectionManager:
 
     def get_rank(self, user_id: int) -> str:
         return _bond.rank_name(_bond.get(int(user_id)))
+
+    def parse_and_apply_bond_tag(self, text: str, user_id: int) -> str:
+        """Apply at most one validated model-generated bond event and strip its tag."""
+        matches = list(_BOND_CHANGE_TAG_RE.finditer(text))
+        if not matches:
+            return _BOND_TAG_STRIP_RE.sub("", text).strip()
+
+        for index, match in enumerate(matches):
+            if index > 0:
+                logger.warning("[bond] Ignoring extra bond event for user=%s", user_id)
+                break
+
+            try:
+                amount = float(match.group("amount"))
+            except ValueError:
+                logger.warning("[bond] Ignoring invalid bond amount for user=%s", user_id)
+                continue
+
+            if amount > 0:
+                delta = min(amount, _bond.MAX_EVENT_INCREASE)
+            elif amount < 0:
+                delta = max(amount, -_bond.MAX_EVENT_DECREASE)
+            else:
+                logger.warning("[bond] Ignoring zero bond event amount=%s", amount)
+                continue
+
+            old_value = _bond.get(int(user_id))
+            new_value = _bond.add_and_get(int(user_id), delta)
+            logger.info(
+                "[bond] Applied event user=%s delta=%+.2f: %.2f -> %.2f",
+                user_id, delta, old_value, new_value,
+            )
+
+        return _BOND_TAG_STRIP_RE.sub("", text).strip()
 
     # Lust (sync — DB with lazy decay)
 
