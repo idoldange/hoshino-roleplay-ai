@@ -107,7 +107,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "web_crawl",
-            "description": "Đọc toàn bộ nội dung văn bản của 1 URL qua Jina Reader.",
+            "description": "Đọc toàn bộ nội dung văn bản của 1 trang web.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -140,23 +140,23 @@ TOOLS_SCHEMA = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "increase_output_tokens",
-            "description": "Tăng giới hạn output lượt kế nếu 512 token không đủ trả lời dài.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "max_tokens": {
-                        "type": "integer",
-                        "description": "Giới hạn output mới (vd: 16384, 32768).",
-                    }
-                },
-                "required": ["max_tokens"],
-            },
-        },
-    },
+#    {
+#        "type": "function",
+#        "function": {
+#            "name": "increase_output_tokens",
+#            "description": "Tăng giới hạn output lượt kế nếu 512 token không đủ trả lời dài.",
+#            "parameters": {
+#                "type": "object",
+#                "properties": {
+#                    "max_tokens": {
+#                        "type": "integer",
+#                        "description": "Giới hạn output mới (vd: 16384, 32768).",
+#                    }
+#                },
+#                "required": ["max_tokens"],
+#            },
+#        },
+#    },
     {
         "type": "function",
         "function": {

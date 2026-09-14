@@ -26,7 +26,7 @@ HISTORY_LIMIT = int(os.environ.get("HISTORY_LIMIT", "20"))
 HISTORY_SCAN_LIMIT = int(os.environ.get("HISTORY_SCAN_LIMIT", "300"))
 GLOBAL_HISTORY_KEEP = int(os.environ.get("GLOBAL_HISTORY_KEEP", "60"))
 GLOBAL_HISTORY_LIMIT = int(os.environ.get("GLOBAL_HISTORY_LIMIT", "30"))
-REFLECTION_TIMEOUT_SECONDS = float(os.environ.get("REFLECTION_TIMEOUT_SECONDS", "90"))
+REFLECTION_TIMEOUT_SECONDS = float(os.environ.get("REFLECTION_TIMEOUT_SECONDS", "120"))
 REFLECTION_MAX_TOKENS = int(os.environ.get("REFLECTION_MAX_TOKENS", "1024"))
 DAILY_SUMMARY_TIMEOUT_SECONDS = float(os.environ.get("DAILY_SUMMARY_TIMEOUT_SECONDS", "90"))
 DAILY_SUMMARY_MAX_TOKENS = int(os.environ.get("DAILY_SUMMARY_MAX_TOKENS", "149"))
@@ -76,12 +76,13 @@ AFFECTION_RANKS = (
 )
 
 AFFECTION_MOOD_LEVELS = (
-    (-100, -60, "distressed", "Hoshino is feeling deeply distressed."),
-    (-60, -20, "unhappy", "Hoshino is feeling unhappy."),
-    (-20, 20, "neutral", "Hoshino is in her usual composed state."),
-    (20, 60, "cheerful", "Hoshino is feeling cheerful."),
-    (60, 101, "happy", "Hoshino is feeling very happy."),
+    (-100, -60, "distressed", "Hoshino đang rất suy sụp, hoang mang hoặc bị tổn thương nặng."),
+    (-60, -20, "unhappy", "Hoshino đang bực bội, dỗi hoặc khó chịu trong người."),
+    (-20, 20, "neutral", "Hoshino đang thong thả, lười biếng đúng kiểu thường ngày."),
+    (20, 60, "cheerful", "Hoshino đang vui vẻ, thoải mái và thích trêu đùa Sensei."),
+    (60, 101, "happy", "Hoshino đang cực kỳ vui vẻ và tràn đầy năng lượng."),
 )
+
 AFFECTION_TICK_INTERVAL = float(os.environ.get("AFFECTION_TICK_INTERVAL", "30"))
 AFFECTION_SLEEP_AFTER = float(os.environ.get("AFFECTION_SLEEP_AFTER", "300"))
 AFFECTION_SLEEP_REGEN_PER_TICK = float(os.environ.get("AFFECTION_SLEEP_REGEN_PER_TICK", "1"))

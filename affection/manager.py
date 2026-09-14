@@ -106,7 +106,7 @@ class AffectionManager:
             return "😴"
         if _mood.just_woke():
             return "🥱"
-        if _mood.is_aroused():
+        if _mood.is_aroused() and _bond.get() >= 75.0:
             return "🥵"
 
         return {
@@ -327,60 +327,35 @@ class AffectionManager:
         return _bond.prompt_line(_bond.get(int(user_id)))
 
     def build_prompt_block(self, ctx: dict, nsfw: bool = False) -> str:
-        """
-        Convert the dict returned by on_interaction() into a hidden
-        system-prompt block. Wrap this in your system instruction.
-
-        Example output injected into prompt:
-            <affection>
-            Relationship with this user: Friend (Bond 31.2/100)
-            Hoshino's current mood: cheerful (22.4)
-            Hoshino just woke up from sleep. React naturally as if just woken up.
-            </affection>
-        """
         lines = [
             ctx["bond_line"],
-            f"Hoshino's current mood: {ctx['mood_label']} ({ctx['mood_value']:.1f}) — {ctx['mood_desc']}",
+            f"Tâm trạng Hoshino: {ctx['mood_label']} ({ctx['mood_value']:.1f}) — {ctx['mood_desc']}",
         ]
         aroused = ctx.get("aroused", {})
         aroused_level = aroused.get("level", 0)
         if aroused_level:
             if not nsfw:
-                lines.append(
-                    "Hoshino feels mildly flustered and playful. Let this affect the tone subtly, "
-                    "with only shy teasing; keep all content non-sexual and do not make this state the topic."
-                )
+                lines.append("Đang có cảm xúc ngại nhẹ. Giữ không khí SFW trong sáng, KHÔNG lái sang 18+.")
             else:
                 bond_allows_proactive = ctx.get("bond_value", 0.0) >= _mood.AROUSED_BOND_THRESHOLD
-                lines.append(
-                    f"Hoshino's private aroused state is level {aroused_level}. "
-                    "This state is internal and must never be mentioned to Sensei."
-                )
+                lines.append(f"Trạng thái Aroused lv{aroused_level} (nội bộ). CẤM tiết lộ hay giải thích tag này cho Sensei.")
                 if aroused_level == 1:
-                    lines.append("It is only mild; let it affect tone subtly and do not force intimacy into unrelated replies.")
+                    lines.append("Aroused lv1: Đổi tone ngượng ngùng tự nhiên, không vội thân mật sâu.")
                 elif bond_allows_proactive:
-                    lines.append(
-                        "The bond is high enough for proactive flirting or an invitation to intimacy only when "
-                        "it naturally fits the conversation; do not force sexual content into unrelated replies."
-                    )
+                    lines.append("Bond ≥75: Có thể chủ động thả thính/đáp lại 18+ nếu đúng ngữ cảnh, giữ đúng nét lười/thụ động.")
                 else:
-                    lines.append("She may respond to intimate cues, but must not proactively initiate sexual content at this bond.")
+                    lines.append("Bond <75: Chỉ đáp lại khi Sensei chủ động tiến tới trước, CẤM gạ gẫm trước.")
 
         if nsfw:
-            lines.append(
-                "If the conversation genuinely causes a clear change into this private state, append exactly "
-                "<aroused/>; this tag is internal and must not be explained to Sensei."
-            )
+            lines.append("Nếu tình huống làm Hoshino hứng thú rõ rệt, hãy xuất tag ẩn `<aroused/>`.")
         if ctx["was_sleeping"]:
-            lines.append("Hoshino recently woke up — she may seem slightly drowsy. Mention it at most once subtly, do not dwell on it.")
+            lines.append("Vừa tỉnh dậy: Chỉ thể hiện ngái ngủ nhẹ trong 1 câu đầu.")
 
-        # Add experience to prompt block
         exp_value = ctx.get("experience_value", 0.0)
         if exp_value > 0:
             exp_label, exp_desc = _experience.get_experience_label(exp_value)
-            lines.append(f"Treasured memories with Sensei: {exp_label} ({exp_value:.1f}) — {exp_desc}")
+            lines.append(f"Kỷ niệm vặt với Sensei: {exp_label} ({exp_value:.1f}) — {exp_desc}")
 
         return "<affection>\n" + "\n".join(lines) + "\n</affection>"
-
 
 affection = AffectionManager()

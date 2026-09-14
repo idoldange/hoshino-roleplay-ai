@@ -39,7 +39,7 @@ MAX_EVENT_DECREASE = 5.0
 
 def _rank_info(bond: float) -> tuple[str, float]:
     # RANKS format in config: (lo, hi, name, mult)
-    # Blue Archive rank names (config.py):
+    # Blue Archive rank names for Arona (config.py):
     #   (  0,  10, "Unregistered",          1.00)
     #   ( 10,  25, "Momotalk: New Contact",  0.75)
     #   ( 25,  45, "Schale Associate",       0.55)

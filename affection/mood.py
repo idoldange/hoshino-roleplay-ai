@@ -163,13 +163,19 @@ def get() -> float:
     return _mood
 
 
-def label() -> tuple[str, str]:
+def label(nsfw: bool = False, bond_value: float = 0.0) -> tuple[str, str]:
     if is_shocked():
-        return "Shocked", f"Hoshino is genuinely shocked right now — {_shocked_reason}"
+        return "Sốc", f"Hoshino đang thực sự sốc — {_shocked_reason}"
+    if nsfw and is_aroused() and bond_value >= 75.0:
+        lvl = aroused_state()["level"]
+        if lvl >= 2:
+            return "nứng", "Hoshino đang cực kỳ nứng và thèm khát thân mật (BCần Bond ≥50 để ***)."
+        elif lvl == 1:
+            return "hơi nứng", "Hoshino đang rạo rực, nứng nhẹ trong người (Cần Bond ≥50 để ***)."
     for lo, hi, lbl, desc in MOOD_LEVELS:
         if lo <= _mood < hi:
             return lbl, desc
-    return "neutral", "Hoshino is in her usual composed state."
+    return "bình thản", "Hoshino đang ở trạng thái thong dong thường ngày."
 
 
 def is_sleeping() -> bool:
