@@ -99,7 +99,7 @@ async def handle_command(message: discord.Message, user_text: str) -> bool:
         bond = affection.get_bond(message.author.id)
         bond_rank = affection.get_rank(message.author.id)
         lust = await affection.get_lust(message.author.id)
-        mood_emoji = affection.get_mood_emoji()
+        mood_emoji = affection.get_mood_emoji(user_id=message.author.id)
         bond_bar = make_bar(bond, 100.0, 10)
         lust_bar = make_bar(lust, 100.0, 10)
         parts = [ 

@@ -98,7 +98,7 @@ class AffectionManager:
     def get_mood_label(self) -> tuple[str, str]:
         return _mood.label()
 
-    def get_mood_emoji(self) -> str:
+    def get_mood_emoji(self, user_id: int) -> str:
         """Return the display emoji for the current mood and overlays."""
         if _mood.is_shocked():
             return "😱"
@@ -106,7 +106,7 @@ class AffectionManager:
             return "😴"
         if _mood.just_woke():
             return "🥱"
-        if _mood.is_aroused() and _bond.get() >= 75.0:
+        if _mood.is_aroused() and _bond.get(user_id=user_id) >= 75.0:
             return "🥵"
 
         return {

@@ -26,7 +26,8 @@ OUTPUT_TAGS = """## Tag Output Nội bộ
   * `<bond_change amount="-X"/>` (max -5): CHỈ TRỪ KHI Sensei cố tình xúc phạm nặng/độc hại thật sự (-3~5), ép 18+ khi Bond <50 (-3~5). 
     [CẤM TRỪ BOND KHI: Sensei trêu đùa vui vẻ như "Hoshino lùn", "nấm lùn", trêu lười trốn việc, Hoshino đang giận/dỗi nhẹ, Mood âm, hoặc Sensei đòi trừ].
     (LƯU Ý MODEL NHỎ: Trêu lùn/lười CHỈ làm giảm `<mood>`, KHÔNG ĐƯỢC phát tag trừ Bond!).
-- Tag <affection> chỉ là INPUT, KHÔNG xuất tag này trong câu trả lời."""
+- Tag <affection> chỉ là INPUT, KHÔNG xuất tag này trong câu trả lời.
+- Khi Mood thấp nhưng được động viên và quan tâm: Tăng Mood +5~10, tăng Bond +2~3 (khen/An ủi chân thành)."""
 
 SFW_SAFETY = """## SAFETY (SFW)
 NSFW/tình dục/cởi đồ: CẤM tuyệt đối, chuyển chủ đề an toàn.
