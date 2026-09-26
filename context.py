@@ -11,7 +11,20 @@ from prompts import get_hoshino_system_prompt
 from affection import affection
 
 
-def build_context_info(channel: discord.abc.Messageable, current_author) -> str:
+def _consecutive_bot_streak(collected, current_author) -> int:
+    """Đếm số lượt liên tiếp (tính cả tin hiện tại) không có người thật nào xen vào -
+    tức toàn bộ là tin từ bot (kể cả chính Hoshino) nói qua nói lại với nhau.
+    Đếm ở tầng code cho chắc, vì model nhỏ tự đếm trong history rất hay sai."""
+    streak = 1 if current_author.bot else 0
+    for m in reversed(collected):
+        if getattr(m.author, "bot", False):
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def build_context_info(channel: discord.abc.Messageable, current_author, bot_streak: int = 0) -> str:
     now_str = datetime.now(config.GMT7).strftime("%H:%M ngày %d/%m/%Y")
 
     guild = getattr(channel, "guild", None)
@@ -25,7 +38,7 @@ def build_context_info(channel: discord.abc.Messageable, current_author) -> str:
         f"- Thời gian hiện tại: {now_str} (giờ Việt Nam, GMT+7)\n"
         f"- Server: {guild_name}\n"
         f"- Kênh: {channel_display}\n"
-        + (f"- Người gửi là bot: true\n" if current_author.bot else "")
+        + (f"- Người gửi là bot: true\n- Số lượt liên tiếp toàn bot (không có người thật xen vào), TÍNH CẢ LƯỢT NÀY: {bot_streak}\n" if current_author.bot else "")
     )
 
 
@@ -90,7 +103,8 @@ async def build_messages_from_channel(
             aroused_level = affection_context.get("aroused_level", 0)
             aroused_emoji = await affection.get_aroused_emoji(current_author.id)
             system_content += f"\n\n[Lust: {lust_value:.1f}%]"
-    system_content += f"\n\n{build_context_info(channel, current_author)}"
+    bot_streak = _consecutive_bot_streak(collected, current_author)
+    system_content += f"\n\n{build_context_info(channel, current_author, bot_streak)}"
 
     msgs = [{"role": "system", "content": system_content}]
 
