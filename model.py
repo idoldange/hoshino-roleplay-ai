@@ -12,8 +12,6 @@ from logger import logger
 from tools import TOOLS_SCHEMA, execute_tool_call
 from affection import affection
 
-_THINK_OPEN = "<think>"
-_THINK_CLOSE = "</think>"
 IGNORE_REPLY = "<!-- ignore -->"
 _CONTROL_TAG_RE = re.compile(
     r"<mood>.*?</mood>|<shocked>.*?</shocked>|<aroused\s*/>|"
@@ -66,18 +64,40 @@ class _ControlTagFilter:
 
 
 def split_reasoning(raw_content: str, existing_reasoning: str | None = None):
-    """Tách phần <think>...</think> còn sót (nếu có) khỏi content, gộp với reasoning
-    đã buffer được từ stream (existing_reasoning, tức delta.reasoning_content cộng dồn)."""
-    reasoning = existing_reasoning
+    """Tách phần reasoning còn sót trong content (mọi kiểu thẻ trong
+    config.THOUGHT_TAG_PAIRS) ra khỏi content, gộp với reasoning đã buffer
+    được từ stream (existing_reasoning, tức delta.reasoning_content cộng dồn)."""
+    content, thoughts = config.scan_thought(raw_content or "")
 
-    content = raw_content or ""
-    m = config.THINK_TAG_RE.search(content)
-    if m:
-        extracted = m.group(1).strip()
-        reasoning = f"{reasoning}\n{extracted}" if reasoning else extracted
-        content = (content[: m.start()] + content[m.end():]).strip()
+    if not thoughts:
+        return content.strip(), existing_reasoning
 
-    return content, reasoning
+    extracted = "\n".join(thoughts)
+    reasoning = f"{existing_reasoning}\n{extracted}" if existing_reasoning else extracted
+    return content.strip(), reasoning
+
+
+class _ThoughtFilter:
+    """Giữ mọi khối suy luận (<think>, <|channel>thought, <thought>) khỏi nội dung
+    đang stream. Nhận TOÀN BỘ content tích luỹ từ đầu và chỉ trả về phần hội thoại
+    mới xuất hiện, nên không thể lọt khối suy luận ra Discord dù thẻ bị stream
+    tách vụn qua nhiều delta."""
+
+    def __init__(self):
+        self._emitted = 0
+        self._text = ""
+
+    def feed(self, full_text: str) -> str:
+        self._text = full_text
+        visible = config.cut_partial_tag(config.scan_thought(full_text)[0])
+        if len(visible) <= self._emitted:
+            return ""
+        chunk = visible[self._emitted:]
+        self._emitted = len(visible)
+        return chunk
+
+    def finish(self) -> str:
+        return self.feed(self._text)
 
 
 async def _safe_send(channel, content, reply_message=None, on_first_send=None):
@@ -169,9 +189,10 @@ async def call_model(
     stream_reply=True: nội dung được stream từ API, mỗi khi gặp ký tự xuống dòng
     sẽ gửi ngay 1 tin nhắn Discord. Nếu model yêu cầu tool call, KHÔNG stream gì
     cho vòng đó — đợi nhận đủ full tool call rồi mới xử lý, đúng yêu cầu
-    tool-calling. Phần reasoning (từ delta.reasoning_content HOẶC từ thẻ
-    <think>...</think> lồng trong content) không bao giờ bị gửi ra Discord —
-    được buffer lại và save vào db.save_reasoning đúng 1 lần sau khi stream xong.
+    tool-calling. Phần reasoning (từ delta.reasoning_content HOẶC từ mọi kiểu
+    thẻ suy luận lồng trong content: <think>, <|channel>thought, <thought>)
+    không bao giờ bị gửi ra Discord — được buffer lại và save vào
+    db.save_reasoning đúng 1 lần sau khi stream xong.
     """
     messages = await build_messages_from_channel(
         channel, user_text, author, image_parts=image_parts, message_id=message_id,
@@ -197,6 +218,7 @@ async def call_model(
 
     try:
         use_tools = True
+        max_output_tokens = config.MAX_OUTPUT_TOKENS_DEFAULT
         #log prompt
         for iteration in range(config.MAX_TOOL_ITER):
             create_kwargs = dict(
@@ -204,6 +226,7 @@ async def call_model(
                 messages=messages,
                 temperature=0.7,
                 stream=True,
+                max_tokens=max_output_tokens,
             )
             if use_tools:
                 create_kwargs.update(tools=TOOLS_SCHEMA, tool_choice="auto", reasoning_effort="minimal")
@@ -225,7 +248,7 @@ async def call_model(
             sent_any = False
             send_state = {"reply_message": reply_message, "on_first_send": on_first_send}
             control_filter = _ControlTagFilter()
-            in_think: bool | None = None  # None = chưa xác định, True = đang trong <think>
+            thought_filter = _ThoughtFilter()
 
             try:
                 async for chunk in stream:
@@ -260,43 +283,18 @@ async def call_model(
                         # Content vẫn được stream nếu cùng lượt có tool call. Tool call
                         # chỉ cần đợi đủ arguments; text thì gửi theo pipeline bình thường.
                         if stream_reply:
-                            if in_think is None:
-                                probe = content_buf.lstrip()
-                                if probe.startswith(_THINK_OPEN):
-                                    in_think = True
-                                elif len(probe) >= len(_THINK_OPEN) or (probe and not _THINK_OPEN.startswith(probe)):
-                                    in_think = False
-                                    line_buf += control_filter.feed(content_buf)
-                                    line_buf, did_send = await _flush_lines(channel, line_buf, send_state)
-                                    sent_any = sent_any or did_send
-                                # else: chưa đủ ký tự để biết chắc <think> hay không, chờ delta tiếp
-
-                            elif in_think:
-                                if _THINK_CLOSE in content_buf:
-                                    open_idx = content_buf.index(_THINK_OPEN)
-                                    close_idx = content_buf.index(_THINK_CLOSE)
-                                    extracted = content_buf[open_idx + len(_THINK_OPEN): close_idx].strip()
-                                    if extracted:
-                                        # gộp vào cùng buffer reasoning, save chung 1 lần ở cuối
-                                        reasoning_buf = f"{reasoning_buf}\n{extracted}" if reasoning_buf else extracted
-                                    after = content_buf[close_idx + len(_THINK_CLOSE):]
-                                    in_think = False
-                                    line_buf += control_filter.feed(after)
-                                    line_buf, did_send = await _flush_lines(channel, line_buf, send_state)
-                                    sent_any = sent_any or did_send
-                                # else: vẫn đang trong đoạn suy luận -> không gửi gì, chỉ buffer
-
-                            else:
-                                line_buf += control_filter.feed(delta_content)
+                            visible = thought_filter.feed(content_buf)
+                            if visible:
+                                line_buf += control_filter.feed(visible)
                                 line_buf, did_send = await _flush_lines(channel, line_buf, send_state)
                                 sent_any = sent_any or did_send
             except Exception:
                 logger.exception("Lỗi khi đọc stream cho author=%s channel=%s", author.id, channel.id)
                 raise
 
-            # Gộp reasoning_buf (đã cộng dồn suốt stream) với mọi <think> còn sót lại
-            # trong content_buf (phòng trường hợp không rơi vào nhánh live-detect ở trên,
-            # ví dụ stream_reply=False), rồi save DB đúng 1 lần.
+            # Gộp reasoning_buf (đã cộng dồn suốt stream) với mọi khối suy luận
+            # còn sót lại trong content_buf (phòng trường hợp stream_reply=False),
+            # rồi save DB đúng 1 lần.
             clean_content, reasoning = split_reasoning(content_buf, reasoning_buf or None)
             if reasoning:
                 await db.save_reasoning(author.id, channel.id, reasoning)
@@ -327,6 +325,7 @@ async def call_model(
                 await _stop_typing()
 
                 if stream_reply:
+                    line_buf += thought_filter.finish()
                     line_buf += control_filter.finish()
                     # Gửi nốt phần dư cuối (dòng không có \n kết thúc).
                     if line_buf.strip() and line_buf.strip() != IGNORE_REPLY:
@@ -361,6 +360,7 @@ async def call_model(
                 return final_reply, messages
 
             if stream_reply:
+                line_buf += thought_filter.finish()
                 line_buf += control_filter.finish()
                 if line_buf.strip() and line_buf.strip() != IGNORE_REPLY:
                     for part in split_message(line_buf, 1900):
@@ -411,10 +411,18 @@ async def call_model(
                 except json.JSONDecodeError:
                     args = {}
                 if tc.function.name == "increase_output_tokens":
-                    requested_tokens = int(args.get("max_tokens", max_output_tokens) or max_output_tokens)
-                    requested_tokens = max(max_output_tokens, requested_tokens)
-                    max_output_tokens = min(requested_tokens, config.MAX_OUTPUT_TOKENS_LIMIT)
-                    logger.info("Model chủ động tăng max_tokens lên %d", max_output_tokens)
+                    try:
+                        requested_tokens = int(args.get("max_tokens") or 0)
+                    except (TypeError, ValueError):
+                        requested_tokens = 0
+                    if requested_tokens > max_output_tokens:
+                        max_output_tokens = min(requested_tokens, config.MAX_OUTPUT_TOKENS_LIMIT)
+                        logger.info("Model chủ động tăng max_tokens lên %d", max_output_tokens)
+                    else:
+                        logger.info(
+                            "Model xin max_tokens=%d nhưng đã ở mức cao nhất (%d), giữ nguyên",
+                            requested_tokens, max_output_tokens,
+                        )
                 guild_id = channel.guild.id if getattr(channel, "guild", None) else None
                 result = await execute_tool_call(tc.function.name, args, author.id, channel_id=channel.id, guild_id=guild_id)
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
