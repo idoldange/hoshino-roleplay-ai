@@ -11,9 +11,9 @@ load_dotenv(os.path.join(PROJECT_DIR, ".env"), encoding="utf-8-sig")
 def _database_path(value: str) -> str:
     return value if os.path.isabs(value) else os.path.join(PROJECT_DIR, value)
 
-LM_BASE_URL = os.environ.get("LM_BASE_URL", "https://imgxh.eu.org/v1")
+LM_BASE_URL = os.environ.get("LM_BASE_URL", "https://localhost:1234/v1")
 LM_API_KEY = os.environ.get("LM_API_KEY", "")
-MODEL_NAME = os.environ.get("MODEL_NAME", "imgxh/roleplay")
+MODEL_NAME = os.environ.get("MODEL_NAME", "google/gemma4-12b-it")
 REFLECTION_MODEL_NAME = MODEL_NAME
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")
 
