@@ -1,8 +1,12 @@
 ﻿import os
 import re
 from datetime import timedelta, timezone
+from dotenv import load_dotenv
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+load_dotenv(os.path.join(PROJECT_DIR, ".env"), encoding="utf-8-sig")
+
 
 def _database_path(value: str) -> str:
     return value if os.path.isabs(value) else os.path.join(PROJECT_DIR, value)
@@ -52,70 +56,6 @@ THOUGHT_TAG_PAIRS = (
     ("<think>", "</think>"),
     ("<thought>", "</thought>"),
 )
-
-THINK_TAG_RE = re.compile(
-    "|".join(
-        f"{re.escape(opening)}(.*?){re.escape(closing)}"
-        for opening, closing in THOUGHT_TAG_PAIRS
-    ),
-    re.DOTALL | re.IGNORECASE,
-)
-
-_LOWER_TAG_LITERALS = tuple(
-    tag.lower() for pair in THOUGHT_TAG_PAIRS for tag in pair
-)
-_MAX_TAG_LEN = max(len(tag) for tag in _LOWER_TAG_LITERALS)
-
-
-def scan_thought(text: str) -> tuple[str, list[str]]:
-    """Tách text thành (phần hội thoại, các khối suy luận).
-
-    Mọi khối suy luận — kể cả khối chưa đóng thẻ — đều bị lấy khỏi phần hội
-    thoại, để thẻ reasoning không bao giờ lọt ra Discord."""
-    lowered = text.lower()
-    visible: list[str] = []
-    thoughts: list[str] = []
-    index = 0
-    length = len(text)
-
-    while index < length:
-        next_open = lowered.find("<", index)
-        if next_open == -1:
-            visible.append(text[index:])
-            break
-        if next_open > index:
-            visible.append(text[index:next_open])
-            index = next_open
-
-        for opening, closing in THOUGHT_TAG_PAIRS:
-            if not lowered.startswith(opening, index):
-                continue
-            body_start = index + len(opening)
-            body_end = lowered.find(closing, body_start)
-            body = text[body_start:body_end if body_end != -1 else length].strip()
-            if body:
-                thoughts.append(body)
-            if body_end == -1:
-                return "".join(visible), thoughts
-            index = body_end + len(closing)
-            break
-        else:
-            visible.append("<")
-            index += 1
-
-    return "".join(visible), thoughts
-
-
-def cut_partial_tag(text: str) -> str:
-    """Cắt phần đuôi text có thể là một thẻ thought chưa gửi hết, để chờ delta
-    tiếp theo thay vì lộ thẻ ra giữa chừng."""
-    for index in range(max(0, len(text) - _MAX_TAG_LEN), len(text)):
-        if text[index] != "<":
-            continue
-        tail = text[index:].lower()
-        if any(literal.startswith(tail) for literal in _LOWER_TAG_LITERALS):
-            return text[:index]
-    return text
 
 GMT7 = timezone(timedelta(hours=7))
 

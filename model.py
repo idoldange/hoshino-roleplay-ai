@@ -7,7 +7,7 @@ import discord
 import config
 from client import client_ai, db
 from context import build_messages_from_channel
-from formatting import split_message
+from formatting import cut_partial_tag, scan_thought, split_message
 from logger import logger
 from tools import TOOLS_SCHEMA, execute_tool_call
 from affection import affection
@@ -67,7 +67,7 @@ def split_reasoning(raw_content: str, existing_reasoning: str | None = None):
     """Tách phần reasoning còn sót trong content (mọi kiểu thẻ trong
     config.THOUGHT_TAG_PAIRS) ra khỏi content, gộp với reasoning đã buffer
     được từ stream (existing_reasoning, tức delta.reasoning_content cộng dồn)."""
-    content, thoughts = config.scan_thought(raw_content or "")
+    content, thoughts = scan_thought(raw_content or "")
 
     if not thoughts:
         return content.strip(), existing_reasoning
@@ -89,7 +89,7 @@ class _ThoughtFilter:
 
     def feed(self, full_text: str) -> str:
         self._text = full_text
-        visible = config.cut_partial_tag(config.scan_thought(full_text)[0])
+        visible = cut_partial_tag(scan_thought(full_text)[0])
         if len(visible) <= self._emitted:
             return ""
         chunk = visible[self._emitted:]
