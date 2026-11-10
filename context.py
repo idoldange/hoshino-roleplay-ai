@@ -100,11 +100,10 @@ async def build_messages_from_channel(
     if enable_nsfw and affection_context:
         lust_value = affection_context.get("lust_value", 0.0)
         if lust_value > 0:
-            aroused_level = affection_context.get("aroused_level", 0)
-            aroused_emoji = await affection.get_aroused_emoji(current_author.id)
             system_content += f"\n\n[Lust: {lust_value:.1f}%]"
     bot_streak = _consecutive_bot_streak(collected, current_author)
     system_content += f"\n\n{build_context_info(channel, current_author, bot_streak)}"
+    system_content += "\n\n[Nhắc cuối] Trả lời luôn, không suy nghĩ lan man, không nháp nhiều phương án."
 
     msgs = [{"role": "system", "content": system_content}]
 

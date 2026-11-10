@@ -8,19 +8,45 @@ _LOWER_TAG_LITERALS = tuple(
 _MAX_TAG_LEN = max(len(tag) for tag in _LOWER_TAG_LITERALS)
 
 
+def _open_tag_regex(opening: str) -> str:
+    """Thẻ mở chấp nhận cả kiểu cũ thiếu ``>`` (``<thought\\n...``).
+
+    Một thẻ mở chỉ khớp khi kết thúc bằng ``>`` (có thể có khoảng trắng trước)
+    hoặc đứng ngay trước một ranh giới từ, để ``<thoughts>`` không bị nhận nhầm.
+    """
+    base = opening[:-1] if opening.endswith(">") else opening
+    return re.escape(base) + r"(?:\s*>|\b)"
+
+
+def _close_tag_regex(closing: str) -> str:
+    base = closing[:-1] if closing.endswith(">") else closing
+    if base and base[-1].isalnum():
+        return re.escape(base) + r"(?:\s*>|\b)"
+    return re.escape(base) + r"\s*>"
+
+
+_THOUGHT_TAG_RES = tuple(
+    (
+        re.compile(_open_tag_regex(opening), re.IGNORECASE),
+        re.compile(_close_tag_regex(closing), re.IGNORECASE),
+    )
+    for opening, closing in THOUGHT_TAG_PAIRS
+)
+
+
 def scan_thought(text: str) -> tuple[str, list[str]]:
     """Tách text thành (phần hội thoại, các khối suy luận).
 
-    Mọi khối suy luận — kể cả khối chưa đóng thẻ — đều bị lấy khỏi phần hội
-    thoại, để thẻ reasoning không bao giờ lọt ra Discord."""
-    lowered = text.lower()
+    Mọi khối suy luận — kể cả khối chưa đóng thẻ hoặc thẻ mở kiểu cũ thiếu
+    ``>`` (``<thought\\n...``) — đều bị lấy khỏi phần hội thoại, để thẻ
+    reasoning không bao giờ lọt ra Discord."""
     visible: list[str] = []
     thoughts: list[str] = []
     index = 0
     length = len(text)
 
     while index < length:
-        next_open = lowered.find("<", index)
+        next_open = text.find("<", index)
         if next_open == -1:
             visible.append(text[index:])
             break
@@ -28,19 +54,25 @@ def scan_thought(text: str) -> tuple[str, list[str]]:
             visible.append(text[index:next_open])
             index = next_open
 
-        for opening, closing in THOUGHT_TAG_PAIRS:
-            if not lowered.startswith(opening, index):
+        matched = False
+        for open_re, close_re in _THOUGHT_TAG_RES:
+            open_match = open_re.match(text, index)
+            if not open_match:
                 continue
-            body_start = index + len(opening)
-            body_end = lowered.find(closing, body_start)
-            body = text[body_start:body_end if body_end != -1 else length].strip()
+            matched = True
+            body_start = open_match.end()
+            close_match = close_re.search(text, body_start)
+            if close_match is None:
+                body = text[body_start:].strip()
+                if body:
+                    thoughts.append(body)
+                return "".join(visible), thoughts
+            body = text[body_start:close_match.start()].strip()
             if body:
                 thoughts.append(body)
-            if body_end == -1:
-                return "".join(visible), thoughts
-            index = body_end + len(closing)
+            index = close_match.end()
             break
-        else:
+        if not matched:
             visible.append("<")
             index += 1
 

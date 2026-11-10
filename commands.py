@@ -13,7 +13,7 @@ HELP_TEXT = f"""**Lệnh của Hoshino Bot** (prefix: `{config.BOT_PREFIX}`)
 `{config.BOT_PREFIX} remember <nội dung>` - Nhờ Hoshino ghi nhớ điều gì đó về bạn
 `{config.BOT_PREFIX} forget` - Xoá toàn bộ ghi nhớ về bạn
 `{config.BOT_PREFIX} reasoning` - Xem reasoning gần nhất mà model đã suy nghĩ ở kênh này (nếu model có hỗ trợ)
-`{config.BOT_PREFIX} affection` - Xem mood, bond và lust hiện tại
+`{config.BOT_PREFIX} affection` - Xem mood, bond, lust, experience và quan hệ đặc biệt hiện tại
 `{config.BOT_PREFIX} lust reset` - Reset lust về 0 (manual)
 `{config.BOT_PREFIX} help` - Xem lại danh sách lệnh này
 
@@ -73,8 +73,9 @@ async def handle_command(message: discord.Message, user_text: str) -> bool:
         await db.clear_memory(message.author.id)
         await db.clear_personalization(message.author.id)
         await db.clear_global_history(message.author.id)
-        from affection import bond
+        from affection import bond, special
         await bond.clear_bond(message.author.id)
+        special.invalidate(message.author.id)
         await message.channel.send("Xoá sạch ghi nhớ về Sensei rồi đó, coi như tụi mình mới quen lại từ đầu ha~")
         return True
 
@@ -95,21 +96,29 @@ async def handle_command(message: discord.Message, user_text: str) -> bool:
         return True
 
     if lowered in ("affection", "mood", "bond"):
-        mood_label, mood_desc = affection.get_mood_label()
+        is_dm = message.guild is None or bool(getattr(message.channel, "nsfw", False))
+        d = affection.describe_mood(message.author.id, is_dm=is_dm)
         bond = affection.get_bond(message.author.id)
         bond_rank = affection.get_rank(message.author.id)
         lust = await affection.get_lust(message.author.id)
-        mood_emoji = affection.get_mood_emoji(user_id=message.author.id)
+        exp = await affection.get_experience(message.author.id)
         bond_bar = make_bar(bond, 100.0, 10)
         lust_bar = make_bar(lust, 100.0, 10)
-        parts = [ 
-            f"{mood_emoji} Mood: {mood_label} ({affection.get_mood():.1f})\n> {mood_desc}",
-            f"💕 Bond: {bond_bar} {int(bond)}/100",
+        parts = [
+            f"Mood: {d['label']} ({d['valence']:.1f})\n> {d['desc']} {d['blend']}".strip(),
+            f"💕 Bond: {bond_bar} {bond:.1f}/100 — {bond_rank}",
         ]
-        if message.guild is None or bool(getattr(message.channel, "nsfw", False)):
-            aroused_emoji = await affection.get_aroused_emoji(message.author.id)
-            parts.append(f"{aroused_emoji}🔥 Lust: {lust_bar} {lust:.1f}%")
-        
+        if d.get("why"):
+            parts.append("Lý do: " + "; ".join(d["why"]))
+        if is_dm:
+            parts.append(f"🔥 Lust: {lust_bar} {lust:.1f}%")
+        from affection import experience as experience_mgr, special
+        if exp > 0:
+            exp_label, exp_desc = experience_mgr.get_experience_label(exp)
+            parts.append(f"✨ Experience: {exp:.1f} — {exp_label}: {exp_desc}")
+        rel = special.embed_line(message.author.id)
+        if rel:
+            parts.append(f"💞 Quan hệ đặc biệt: {rel}")
         await message.channel.send("\n".join(parts))
         return True
 

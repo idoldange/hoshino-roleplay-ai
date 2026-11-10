@@ -8,19 +8,30 @@ DB writes happen async in background — never blocks response path.
 import asyncio
 import random
 import os
+import time
 import aiosqlite
 import threading
-from config import AFFECTION_DB_PATH as DB_PATH
-from logger import logger
+from datetime import datetime
+from console import console
+from config import (
+    AFFECTION_DB_PATH as DB_PATH,
+    BASE_EXP_MAX,
+    BASE_EXP_MIN,
+    BOND_DECAY_CHECK_SECS,
+    BOND_DECAY_GRACE_DAYS,
+    BOND_DECAY_PER_DAY,
+    BOND_TAG_COOLDOWN,
+    BOND_TAG_DAILY_CAP,
+    BOND_TAG_MAX,
+    BOND_TAG_MIN,
+    RANKS,
+    TIMEZONE,
+)
 
 # Async lock for DB operations
 _lock = asyncio.Lock()
 # Thread lock for sync cache access (protects _cache dict during reads/writes)
 _cache_lock = threading.Lock()
-
-from config import AFFECTION_BASE_EXP_MAX as BASE_EXP_MAX
-from config import AFFECTION_BASE_EXP_MIN as BASE_EXP_MIN
-from config import AFFECTION_RANKS as RANKS
 
 # In-memory cache: {user_id: bond_float}
 _cache: dict[int, float] = {}
@@ -28,25 +39,28 @@ _cache: dict[int, float] = {}
 # Track pending flush tasks to ensure they complete before shutdown
 _pending_flushes: set = set()
 
+# Last-activity clock per user (epoch seconds) - drives idle decay. Persisted as bond.last_seen.
+_last_seen: dict[int, float] = {}
+# Last applied NEGATIVE <bond> tag per user (monotonic) - cooldown (positive tags have none)
+_last_adjust: dict[int, float] = {}
+# Bond gained today through positive <bond> tags: {user_id: [day "YYYY-MM-DD" in TIMEZONE, gained]}
+_daily: dict[int, list] = {}
+
 # Minimum cache size threshold — if cache is this small, something went wrong
 _EXPECTED_CACHE_SIZE = 70
-
-# Model-generated bond events are intentionally small and infrequent.
-MAX_EVENT_INCREASE = 25.0
-MAX_EVENT_DECREASE = 5.0
 
 # Helpers
 
 def _rank_info(bond: float) -> tuple[str, float]:
     # RANKS format in config: (lo, hi, name, mult)
-    # Blue Archive rank names for Arona (config.py):
+    # Blue Archive rank names (config.py):
     #   (  0,  10, "Unregistered",          1.00)
     #   ( 10,  25, "Momotalk: New Contact",  0.75)
     #   ( 25,  45, "Schale Associate",       0.55)
     #   ( 45,  60, "Trusted Sensei",         0.38)
     #   ( 60,  75, "Kivotos Partner",        0.25)
     #   ( 75,  90, "Shittim Core",           0.14)
-    #   ( 90, 100, "Hoshino's Sensei",       0.07)
+    #   ( 90, 100, "Arona's Sensei",         0.07)
     #   (100, 101, "Navigator's Sensei",     0.00)  # cap
     for lo, hi, name, mult in RANKS:
         if lo <= bond < hi:
@@ -61,12 +75,12 @@ def rank_name(bond: float) -> str:
 def exp_for_message(bond: float, mood: float = 0.0, mood_delta: float = 0.0) -> float:
     _, mult = _rank_info(bond)
     if mult == 0.0:
-        logger.debug("[bond] exp_for_message: mult=0 (bond=%.2f is capped), returning 0", bond)
+        console.log(f"[bond] exp_for_message: mult=0 (bond={bond:.2f} is capped), returning 0", "DEBUG")
         return 0.0
     base = random.uniform(BASE_EXP_MIN, BASE_EXP_MAX)
     roll = random.random()
     if roll < 0.10:
-        logger.debug("[bond] exp_for_message: 10%% chance hit, returning 0")
+        console.log(f"[bond] exp_for_message: 10% chance hit, returning 0", "DEBUG")
         return 0.0
     if roll > 0.95:
         base *= 1.8
@@ -75,7 +89,7 @@ def exp_for_message(bond: float, mood: float = 0.0, mood_delta: float = 0.0) -> 
     # Bonus if user's message itself boosted mood
     delta_bonus = 1.0 + (mood_delta / 100.0) if mood_delta > 0 else 1.0
     result = round(base * mult * mood_mult * delta_bonus, 4)
-    logger.debug("[bond] exp_for_message: bond=%.2f mood=%.2f -> exp=%.4f", bond, mood, result)
+    console.log(f"[bond] exp_for_message: bond={bond:.2f} mood={mood:.2f} → exp={result:.4f}", "DEBUG")
     return result
 
 
@@ -88,12 +102,24 @@ def prompt_line(bond: float) -> str:
 async def _init_db():
     db_dir = os.path.dirname(DB_PATH)
     os.makedirs(db_dir, exist_ok=True)
-    logger.debug("[bond] Using database: %s", DB_PATH)
+    console.log(f"[bond] Using database: {DB_PATH}", "DEBUG")
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS bond (
                 user_id INTEGER PRIMARY KEY,
                 bond    REAL    NOT NULL DEFAULT 0.0
+            )
+        """)
+        # Migration: idle-decay clock
+        async with db.execute("PRAGMA table_info(bond)") as cur:
+            _cols = {r[1] for r in await cur.fetchall()}
+        if "last_seen" not in _cols:
+            await db.execute("ALTER TABLE bond ADD COLUMN last_seen REAL")
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS bond_tag_daily (
+                user_id INTEGER PRIMARY KEY,
+                day     TEXT    NOT NULL,
+                gained  REAL    NOT NULL DEFAULT 0.0
             )
         """)
         await db.commit()
@@ -106,45 +132,101 @@ async def _flush(user_id: int, bond: float):
         # Read latest value from cache — avoids writing stale value if cache was updated after this task was scheduled
         with _cache_lock:
             bond = _cache.get(user_id, bond)
+            seen = _last_seen.get(user_id)
         async with _lock:
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute("""
-                    INSERT INTO bond (user_id, bond) VALUES (?, ?)
-                    ON CONFLICT(user_id) DO UPDATE SET bond = excluded.bond
-                """, (user_id, bond))
+                    INSERT INTO bond (user_id, bond, last_seen) VALUES (?, ?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        bond = excluded.bond,
+                        last_seen = COALESCE(excluded.last_seen, bond.last_seen)
+                """, (user_id, bond, seen))
                 await db.commit()
-                logger.debug("[bond] Saved user=%s bond=%.2f", user_id, bond)
+                console.log(f"[bond] Saved user={user_id} bond={bond:.2f}", "DEBUG")
     except Exception as e:
-        logger.error("[bond] flush FAILED user=%s bond=%s: %s", user_id, bond, e)
+        console.log(f"[bond] flush FAILED user={user_id} bond={bond}: {e}", "ERROR")
 
 
 async def _wait_all_flushes():
     """Wait for all pending flush tasks to complete. Call this before shutdown."""
     if _pending_flushes:
-        logger.info("[bond] Waiting for %s flush tasks to complete...", len(_pending_flushes))
+        console.log(f"[bond] Waiting for {len(_pending_flushes)} flush tasks to complete...", "INFO")
         await asyncio.gather(*_pending_flushes, return_exceptions=True)
         _pending_flushes.clear()
-        logger.info("[bond] All flush tasks completed.")
+        console.log("[bond] All flush tasks completed.", "INFO")
 
 
 # Public API
 
 async def initialize():
     """Load all bond rows into RAM. Call once at startup."""
-    logger.info("[bond] initialize() START")
-    logger.debug("[bond] _cache object id at START: %s", id(_cache))
+    console.log(f"[bond] initialize() START", "INFO")
+    console.log(f"[bond] _cache object id at START: {id(_cache)}", "DEBUG")
     await _init_db()
-    logger.info("[bond] Loading bonds from: %s", DB_PATH)
+    console.log(f"[bond] Loading bonds from: {DB_PATH}", "INFO")
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT user_id, bond FROM bond") as cur:
+        async with db.execute("SELECT user_id, bond, last_seen FROM bond") as cur:
             rows = await cur.fetchall()
+            _now = time.time()
             with _cache_lock:
-                for user_id, bond in rows:
+                for user_id, bond, seen in rows:
                     _cache[int(user_id)] = min(100.0, bond)
-                    logger.debug("[bond] Loaded user=%s bond=%.2f", user_id, bond)
+                    # Rows from before decay existed have no last_seen - start their clock now
+                    _last_seen[int(user_id)] = seen if seen else _now
+                    console.log(f"[bond] Loaded user={user_id} bond={bond:.2f}", "DEBUG")
     with _cache_lock:
         size = len(_cache)
-    logger.info("[bond] initialize() COMPLETE: %s users in cache, id=%s", size, id(_cache))
+    await _load_daily()
+    console.log(f"[bond] initialize() COMPLETE: {size} users in cache, id={id(_cache)}", "INFO")
+
+
+def peek(user_id: int) -> float:
+    """Quiet read for other modules (mood coupling): no logging, never triggers a cache reload."""
+    return _cache.get(int(user_id), 0.0)
+
+
+def _day_key(now: float | None = None) -> str:
+    """Calendar day in TIMEZONE (falls back to the host's local date if tz data is unavailable)."""
+    now = time.time() if now is None else now
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.fromtimestamp(now, ZoneInfo(TIMEZONE)).date().isoformat()
+    except Exception:
+        return datetime.fromtimestamp(now).date().isoformat()
+
+
+def daily_gained(user_id: int) -> float:
+    """Bond gained today through positive <bond> tags."""
+    row = _daily.get(int(user_id))
+    return row[1] if row and row[0] == _day_key() else 0.0
+
+
+async def _load_daily():
+    try:
+        today = _day_key()
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT user_id, day, gained FROM bond_tag_daily") as cur:
+                rows = await cur.fetchall()
+        with _cache_lock:
+            for uid, day, gained in rows:
+                if day == today:
+                    _daily[int(uid)] = [day, float(gained)]
+        console.log(f"[bond] daily allowance loaded for {len(_daily)} user(s)", "DEBUG")
+    except Exception as e:
+        console.log(f"[bond] _load_daily failed: {e}", "ERROR")
+
+
+async def _flush_daily(user_id: int, day: str, gained: float):
+    try:
+        async with _lock:
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute("""
+                    INSERT INTO bond_tag_daily (user_id, day, gained) VALUES (?, ?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET day = excluded.day, gained = excluded.gained
+                """, (user_id, day, gained))
+                await db.commit()
+    except Exception as e:
+        console.log(f"[bond] daily flush FAILED user={user_id}: {e}", "ERROR")
 
 
 def get(user_id: int) -> float:
@@ -155,18 +237,18 @@ def get(user_id: int) -> float:
         first_5_keys = list(_cache.keys())[:5]
         in_cache = user_id in _cache
         cache_size = len(_cache)
-        logger.debug("[bond] get(%s): cache_size=%s, in_cache=%s, id=%s, sample_keys=%s", user_id, cache_size, in_cache, id(_cache), first_5_keys)
+        console.log(f"[bond] get({user_id}): cache_size={cache_size}, in_cache={in_cache}, id={id(_cache)}, sample_keys={first_5_keys}", "DEBUG")
         
         # If user NOT in cache but cache exists, corruption detected
         if not in_cache and cache_size > 0:
-            logger.debug("[bond] User %s not in cache with %s items. Triggering reload from DB", user_id, cache_size)
+            console.log(f"[bond] User {user_id} not in cache with {cache_size} items. Triggering reload from DB", "DEBUG") # new user, or cache corruption. Trigger reload firsst to be safe.
             all_keys = list(_cache.keys())
-            logger.debug("[bond] Cache contents: %s", f"{all_keys[:20]}{'...' if len(all_keys) > 20 else ''}")
+            console.log(f"[bond] Cache contents: {all_keys[:20]}{'...' if len(all_keys) > 20 else ''}", "DEBUG")
             # Note: Don't trigger reload while holding lock - release first
         
         # Safety check: if cache is suspiciously small, might need reload
         elif cache_size < _EXPECTED_CACHE_SIZE // 2 and user_id not in _cache:
-            logger.warning("[bond] Cache is small (%s users)", cache_size)
+            console.log(f"[bond] WARNING: cache is small ({cache_size} users)", "WARN")
         
         val = _cache.get(user_id, 0.0)
     
@@ -174,7 +256,7 @@ def get(user_id: int) -> float:
     if not in_cache and cache_size > 0:
         asyncio.create_task(_reload_cache_from_db())
     
-    logger.debug("[bond] get(%s): result=%.2f", user_id, val)
+    console.log(f"[bond] get({user_id}): result={val:.2f}", "DEBUG")
     return val
 
 
@@ -203,11 +285,11 @@ async def _reload_cache_from_db():
                     added += 1
             final_size = len(_cache)
 
-        logger.info("[bond] _reload_cache_from_db() complete: added %s missing users, total=%s", added, final_size)
+        console.log(f"[bond] _reload_cache_from_db() complete: added {added} missing users, total={final_size}", "INFO")
         if final_size == 0:
-            logger.error("[bond] _reload_cache_from_db() restored 0 users! DB might be corrupted or locked")
+            console.log(f"[bond] ERROR: _reload_cache_from_db() restored 0 users! DB might be corrupted or locked", "ERROR")
     except Exception as e:
-        logger.error("[bond] _reload_cache_from_db() FAILED: %s", e)
+        console.log(f"[bond] _reload_cache_from_db() FAILED: {e}", "ERROR")
 
 
 def add_and_get(user_id: int, delta: float) -> float:
@@ -217,13 +299,15 @@ def add_and_get(user_id: int, delta: float) -> float:
     """
     user_id = int(user_id)
     with _cache_lock:
-        logger.debug("[bond] add_and_get() START: user=%s, delta=%.2f, cache_size=%s", user_id, delta, len(_cache))
+        console.log(f"[bond] add_and_get() START: user={user_id}, delta={delta:.2f}, cache_size={len(_cache)}", "DEBUG")
         current = _cache.get(user_id, 0.0)
-        delta = max(-MAX_EVENT_DECREASE, min(MAX_EVENT_INCREASE, float(delta)))
-        new_val = max(0.0, min(100.0, current + delta))
+        if delta <= 0:
+            console.log(f"[bond] add_and_get: delta={delta:.2f} ≤ 0, skipping (current={current:.2f})", "DEBUG")
+            return current
+        new_val = min(100.0, current + delta)
         _cache[user_id] = new_val
         cache_size = len(_cache)
-        logger.debug("[bond] add_and_get: user=%s %+0.2f (was %.2f) -> %.2f, cache_size=%s", user_id, delta, current, new_val, cache_size)
+        console.log(f"[bond] add_and_get: user={user_id} +{delta:.2f} (was {current:.2f}) → {new_val:.2f}, cache_size={cache_size}", "DEBUG")
     
     # Fire-and-forget DB write, but track it
     task = asyncio.create_task(_flush(user_id, new_val))
@@ -239,12 +323,13 @@ async def add_and_get_immediate(user_id: int, delta: float) -> float:
     Use this when you need guaranteed persistence (e.g., per message).
     """
     user_id = int(user_id)
+    if delta <= 0:
+        return get(user_id)
     with _cache_lock:
         current = _cache.get(user_id, 0.0)
-        delta = max(-MAX_EVENT_DECREASE, min(MAX_EVENT_INCREASE, float(delta)))
-        new_val = max(0.0, min(100.0, current + delta))
+        new_val = min(100.0, current + delta)
         _cache[user_id] = new_val
-        logger.debug("[bond] User %s: %+0.2f -> %.2f", user_id, delta, new_val)
+        console.log(f"[bond] User {user_id}: +{delta:.2f} → {new_val:.2f}", "DEBUG")
     # Blocking DB write — await it
     await _flush(user_id, new_val)
     return new_val
@@ -260,10 +345,12 @@ async def set_bond(user_id: int, value: float):
 
 
 async def clear_bond(user_id: int):
-    """Clear a user's bond (set to 0). Writes to RAM and DB."""
+    """Clear a user's bond (set to 0) and reset the idle-decay clock."""
     user_id = int(user_id)
     with _cache_lock:
         _cache[user_id] = 0.0
+        _last_seen[user_id] = time.time()
+        _daily.pop(user_id, None)
     await _flush(user_id, 0.0)
 
 
@@ -286,18 +373,153 @@ async def health_check_loop():
             
             # If cache shrunk significantly, might be corrupted
             if current_size < last_size * 0.8 and current_size > 0:  # Lost 20% of users
-                logger.warning("[bond] HEALTH_CHECK: Cache size dropped from %s to %s. Possible corruption detected!", last_size, current_size)
+                console.log(f"[bond] HEALTH_CHECK: Cache size dropped from {last_size} to {current_size}. Possible corruption detected!", "WARN")
                 asyncio.create_task(_reload_cache_from_db())
             elif current_size == 0 and last_size > 0:
-                logger.error("[bond] HEALTH_CHECK: Cache is EMPTY but should have %s users! Emergency reload!", last_size)
+                console.log(f"[bond] HEALTH_CHECK: Cache is EMPTY but should have {last_size} users! Emergency reload!", "ERROR")
                 asyncio.create_task(_reload_cache_from_db())
             else:
-                logger.debug("[bond] HEALTH_CHECK: Cache healthy (%s users)", current_size)
+                console.log(f"[bond] HEALTH_CHECK: Cache healthy ({current_size} users)", "DEBUG")
                 last_size = current_size
                 
         except Exception as e:
-            logger.error("[bond] health_check_loop error: %s", e)
+            console.log(f"[bond] health_check_loop error: {e}", "ERROR")
             await asyncio.sleep(10)  # Brief wait before retry
+
+
+# Idle decay + model-driven adjustment
+
+def _schedule_flush(user_id: int, value: float):
+    try:
+        task = asyncio.get_running_loop().create_task(_flush(user_id, value))
+    except RuntimeError:
+        return  # no running loop (sync/test context) - next flush will persist it
+    _pending_flushes.add(task)
+    task.add_done_callback(lambda t: _pending_flushes.discard(t))
+
+
+def _rank_floor(bond: float) -> float:
+    """Lower bound of the rank this bond sits in - decay never demotes below it."""
+    for lo, hi, _name, _mult in RANKS:
+        if lo <= bond < hi:
+            return float(lo)
+    return 100.0
+
+
+def _decay_user_locked(user_id: int, now: float) -> bool:
+    """
+    Apply whole-day idle decay for one user. Caller must hold _cache_lock.
+    Consumed days advance last_seen, so a restart can never double-apply them.
+    Returns True if the bond value changed.
+    """
+    seen = _last_seen.get(user_id)
+    if seen is None or user_id not in _cache:
+        return False
+    n = int((now - seen) / 86400.0 - BOND_DECAY_GRACE_DAYS)
+    if n < 1:
+        return False
+    old = _cache[user_id]
+    try:
+        from affection import special as _sp
+        mult = _sp.decay_mult(user_id)
+    except Exception:
+        mult = 1.0
+    new = max(_rank_floor(old), old - n * BOND_DECAY_PER_DAY * mult)
+    _last_seen[user_id] = seen + n * 86400.0
+    _cache[user_id] = new
+    if new != old:
+        console.log(f"[bond] decay user={user_id}: {old:.2f} -> {new:.2f} ({n}d idle past grace)", "INFO")
+    return new != old
+
+
+def touch(user_id: int):
+    """Mark user active now. Applies any pending idle decay first so the prompt sees the real value."""
+    user_id = int(user_id)
+    now = time.time()
+    with _cache_lock:
+        changed = _decay_user_locked(user_id, now)
+        _last_seen[user_id] = now
+        val = _cache.get(user_id)
+    if changed and val is not None:
+        _schedule_flush(user_id, val)
+
+
+def adjust(user_id: int, delta: float) -> float:
+    """
+    Model-driven bond change (+/-), from a <bond>N</bond> tag. Clamped to [BOND_TAG_MIN, BOND_TAG_MAX].
+      negative: per-user cooldown (BOND_TAG_COOLDOWN) so the model cannot punish in a burst
+      positive: no cooldown, but at most BOND_TAG_DAILY_CAP bond per user per day (day in TIMEZONE);
+                a tag that exceeds what is left is cut to the remainder; only bond actually added is counted.
+    Returns the applied delta (0.0 if skipped).
+    """
+    user_id = int(user_id)
+    delta = max(BOND_TAG_MIN, min(BOND_TAG_MAX, float(delta)))
+    if delta == 0.0:
+        return 0.0
+    now = time.monotonic()
+    day = _day_key()
+    daily = None
+    with _cache_lock:
+        if delta < 0:
+            if now - _last_adjust.get(user_id, -1e9) < BOND_TAG_COOLDOWN:
+                console.log(f"[bond] adjust user={user_id} {delta:+.1f} skipped (cooldown)", "DEBUG")
+                return 0.0
+            _last_adjust[user_id] = now
+            gained = 0.0
+        else:
+            row = _daily.get(user_id)
+            gained = row[1] if row and row[0] == day else 0.0
+            room = BOND_TAG_DAILY_CAP - gained
+            if room <= 0:
+                console.log(f"[bond] adjust user={user_id} {delta:+.1f} skipped (daily cap {BOND_TAG_DAILY_CAP:g} reached)", "DEBUG")
+                return 0.0
+            delta = min(delta, room)
+        current = _cache.get(user_id, 0.0)
+        new_val = max(0.0, min(100.0, current + delta))
+        applied = new_val - current
+        _cache[user_id] = new_val
+        if delta > 0 and applied > 0:
+            _daily[user_id] = [day, gained + applied]
+            daily = (user_id, day, gained + applied)
+    console.log(f"[bond] adjust user={user_id}: {current:.2f} -> {new_val:.2f} (tag {delta:+.1f})", "INFO")
+    _schedule_flush(user_id, new_val)
+    if daily is not None:
+        try:
+            task = asyncio.get_running_loop().create_task(_flush_daily(*daily))
+            _pending_flushes.add(task)
+            task.add_done_callback(lambda t: _pending_flushes.discard(t))
+        except RuntimeError:
+            pass
+    return applied
+
+
+async def decay_once() -> int:
+    """Apply idle decay to every cached user. Returns how many bonds changed."""
+    now = time.time()
+    changed = []
+    with _cache_lock:
+        for uid in list(_cache.keys()):
+            if uid not in _last_seen:
+                _last_seen[uid] = now   # no clock yet - start it, don't decay retroactively
+                continue
+            if _decay_user_locked(uid, now):
+                changed.append((uid, _cache[uid]))
+    for uid, val in changed:
+        _schedule_flush(uid, val)
+    return len(changed)
+
+
+async def decay_loop():
+    """Run as asyncio.create_task(). Never raises."""
+    await asyncio.sleep(60)
+    while True:
+        try:
+            n = await decay_once()
+            if n:
+                console.log(f"[bond] decay pass: {n} bond(s) decayed", "INFO")
+        except Exception as e:
+            console.log(f"[bond] decay_loop error: {e}", "ERROR")
+        await asyncio.sleep(BOND_DECAY_CHECK_SECS)
 
 
 async def shutdown():

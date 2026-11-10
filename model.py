@@ -14,13 +14,28 @@ from affection import affection
 
 IGNORE_REPLY = "<!-- ignore -->"
 _CONTROL_TAG_RE = re.compile(
-    r"<mood>.*?</mood>|<shocked>.*?</shocked>|<aroused\s*/>|"
-    r"<lust_change\s+amount\s*=\s*['\"][+-]?\d+(?:\.\d+)?['\"]\s*/>|<lust\s*/>|"
-    r"<bond_change\b[^>]*?/\s*>",
+    r"<mood>.*?</mood>"
+    r"|<shocked>.*?</shocked>"
+    r"|<bond>.*?</bond>"
+    r"|<aroused\s*/>"
+    r"|<lust_change\s+amount\s*=\s*['\"][+-]?\d+(?:\.\d+)?['\"]\s*/>|<lust\s*/>"
+    r"|<experience_change\s+amount\s*=\s*['\"][+-]?\d+(?:\.\d+)?['\"]\s*/>"
+    r"|<bond_change\b[^>]*?/\s*>"
+    r"|<:mood>\s*[+-]?\d+(?:\.\d+)?\s*</mood>"
+    r"|</mood>\s*\[[+-]?\d+(?:\.\d+)?\]"
+    r"|</mood>\s*[+-]?\d+(?:\.\d+)?\s*>"
+    r"|</mood>\s*[+-]?\d+(?:\.\d+)?\s*</mood>"
+    r"|</?:?mood\s*/?>",
     re.IGNORECASE | re.DOTALL,
 )
-_CONTROL_TAG_OPEN_RE = re.compile(r"<(?:mood|shocked|aroused|lust_change|lust|bond_change)\b", re.IGNORECASE)
-_CONTROL_TAG_PREFIXES = ("<mood", "<shocked", "<aroused", "<lust_change", "<lust", "<bond_change")
+_CONTROL_TAG_OPEN_RE = re.compile(
+    r"<(?:mood|shocked|bond|aroused|lust_change|lust|experience_change|bond_change)\b|</?:?mood\b|<:mood\b",
+    re.IGNORECASE,
+)
+_CONTROL_TAG_PREFIXES = (
+    "<mood", "<shocked", "<bond", "<aroused", "<lust_change", "<lust", "<experience_change",
+    "<bond_change", "</mood", "</:mood", "<:mood",
+)
 
 
 class _ControlTagFilter:
@@ -197,7 +212,18 @@ async def call_model(
     messages = await build_messages_from_channel(
         channel, user_text, author, image_parts=image_parts, message_id=message_id,
         enable_nsfw=nsfw, affection_context=affection_context, reply_context=reply_context,
+    ) 
+    # check perm coi dc gui tin nhan ko
+    #channel la message.channel
+    perm = (
+        channel.permissions_for(channel.guild.me)
+        if hasattr(channel, "permissions_for") and channel.guild
+        else None
     )
+    if perm and not perm.send_messages:
+        logger.warning("Không có quyền gửi tin nhắn trong channel %s", channel.id)
+        return
+    
     logger.info(
         "call_model bắt đầu: author=%s (%s) channel=%s len(user_text)=%d ảnh=%d",
         author, author.id, channel.id, len(user_text), len(image_parts or []),
@@ -219,6 +245,7 @@ async def call_model(
     try:
         use_tools = True
         max_output_tokens = config.MAX_OUTPUT_TOKENS_DEFAULT
+        call_model._retry_count = 0
         #log prompt
         for iteration in range(config.MAX_TOOL_ITER):
             create_kwargs = dict(
@@ -302,10 +329,14 @@ async def call_model(
 
             if not tool_call_chunks:
                 # Không có tool call -> đây là câu trả lời cuối cùng của vòng lặp.
-                final_reply = affection.parse_and_apply_mood_tag(clean_content, nsfw=nsfw).strip() or "..."
-                final_reply = affection.parse_and_apply_bond_tag(final_reply, author.id).strip() or "..."
-            
-                # Parse lust_change tags
+                final_reply = affection.parse_and_apply_mood_tag(
+                    clean_content,
+                    user_id=author.id,
+                    scope={"is_dm": nsfw},
+                    turn_id=message_id,
+                ).strip() or "..."
+
+                # Lust tags
                 lust_change, lust_reset = affection.parse_lust_change_tag(final_reply)
                 if lust_change != 0.0:
                     if lust_change > 0:
@@ -314,12 +345,41 @@ async def call_model(
                     else:
                         await affection.decrement_lust(author.id, abs(lust_change))
                         logger.info("[lust] Decremented lust for user=%s by %+g", author.id, abs(lust_change))
-            
                 if lust_reset:
                     await affection.reset_lust(author.id)
                     logger.info("[lust] Reset lust for user=%s (climax)", author.id)
+                final_reply = affection.strip_lust_tags(final_reply)
 
-                final_reply = affection.strip_lust_tags(final_reply).strip() or "..."
+                # Experience tags
+                exp_change = affection.parse_experience_change_tag(final_reply)
+                if exp_change > 0:
+                    await affection.increment_experience(author.id, exp_change)
+                    logger.info("[experience] Incremented for user=%s by %+g", author.id, exp_change)
+                elif exp_change < 0:
+                    await affection.decrement_experience(author.id, abs(exp_change))
+                    logger.info("[experience] Decremented for user=%s by %+g", author.id, abs(exp_change))
+                final_reply = affection.strip_experience_tags(final_reply).strip() or "..."
+
+                # Auto-retry nếu chỉ có control tags (kết quả chỉ là "...")
+                if final_reply == "..." and max_output_tokens < config.MAX_OUTPUT_TOKENS_LIMIT:
+                    retry_count = getattr(call_model, "_retry_count", 0)
+                    if retry_count < 2:
+                        call_model._retry_count = retry_count + 1
+                        old_max = max_output_tokens
+                        max_output_tokens = min(max_output_tokens * 2, config.MAX_OUTPUT_TOKENS_LIMIT)
+                        logger.warning(
+                            "Model chỉ trả control tags (reply='...'), retry %d/2 với max_tokens=%d (từ %d)",
+                            call_model._retry_count, max_output_tokens, old_max
+                        )
+                        # Thêm hint cho model biết cần output dialogue text
+                        messages.append({
+                            "role": "system",
+                            "content": "(Hệ thống: Phản hồi trước chỉ chứa thẻ điều khiển nội bộ. Hãy viết thêm dialogue/hành động thực sự cho Sensei thấy.)"
+                        })
+                        await _stop_typing()
+                        continue  # retry vòng lặp với max_tokens lớn hơn
+                    else:
+                        call_model._retry_count = 0
 
                 # Ngừng "đang gõ" TRƯỚC khi gửi tin nhắn phản hồi cuối cùng, không phải sau.
                 await _stop_typing()
@@ -357,6 +417,7 @@ async def call_model(
                     "call_model xong sau %d vòng lặp, len(reply)=%d",
                     iteration + 1, len(final_reply),
                 )
+                call_model._retry_count = 0
                 return final_reply, messages
 
             if stream_reply:

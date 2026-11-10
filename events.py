@@ -199,7 +199,9 @@ async def on_message(message: discord.Message):
 
     # DM and explicitly marked Discord NSFW channels use the NSFW prompt path.
     nsfw = message.guild is None or bool(getattr(message.channel, "nsfw", False))
-    affection_context = await affection.on_interaction(message.author.id, nsfw=nsfw)
+    affection_context = await affection.on_interaction(
+        message.author.id, scope={"is_dm": is_dm}
+    )
     reply_context = await _get_reply_context(message)
 
     _enqueue_request(

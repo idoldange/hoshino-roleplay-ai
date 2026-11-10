@@ -114,3 +114,157 @@ AFFECTION_AROUSED_RANDOM_DURATION_SECONDS = 180
 AFFECTION_AROUSED_MODEL_DURATION_SECONDS = 3600
 AFFECTION_AROUSED_COOLDOWN_SECONDS = 300
 AFFECTION_AROUSED_BOND_THRESHOLD = 75
+
+
+# ── Affection system v2 (emotion vector + bond decay + special relationship) ──
+# Ported from the arona project. These names are what affection/*.py import.
+
+TIMEZONE = "Asia/Ho_Chi_Minh"   # daily bond cap and night-time fatigue
+
+# Tick timing
+TICK_INTERVAL = AFFECTION_TICK_INTERVAL
+DB_FLUSH_EVERY_N = AFFECTION_DB_FLUSH_EVERY_N
+TEMP_READ_EVERY_N = AFFECTION_TEMP_READ_EVERY_N
+
+# Idle / sleep thresholds (seconds)
+SLEEP_AFTER = AFFECTION_SLEEP_AFTER
+WAKE_DISPLAY_WINDOW = AFFECTION_WAKE_DISPLAY_WINDOW
+
+# CPU temperature thresholds (aliases to the legacy AFFECTION_* values)
+TEMP_FREEZE = AFFECTION_TEMP_FREEZE
+TEMP_FREEZE_DELTA = AFFECTION_TEMP_FREEZE_DELTA
+TEMP_COOL = AFFECTION_TEMP_COOL
+TEMP_COOL_DELTA = AFFECTION_TEMP_COOL_DELTA
+TEMP_SWEET = AFFECTION_TEMP_SWEET
+TEMP_SWEET_DELTA = AFFECTION_TEMP_SWEET_DELTA
+TEMP_WARM = AFFECTION_TEMP_WARM
+TEMP_WARM_DELTA = AFFECTION_TEMP_WARM_DELTA
+TEMP_HOT = AFFECTION_TEMP_HOT
+TEMP_HOT_DELTA = AFFECTION_TEMP_HOT_DELTA
+TEMP_OVER = AFFECTION_TEMP_OVER
+TEMP_OVER_DELTA = AFFECTION_TEMP_OVER_DELTA
+
+# Bond ranks + exp (aliases kept for affection/bond.py)
+RANKS = AFFECTION_RANKS
+BASE_EXP_MIN = AFFECTION_BASE_EXP_MIN
+BASE_EXP_MAX = AFFECTION_BASE_EXP_MAX
+
+# Bond idle decay: each whole day beyond the grace period costs BOND_DECAY_PER_DAY,
+# never dropping below the lower bound of the user's current rank.
+BOND_DECAY_GRACE_DAYS = 7.0
+BOND_DECAY_PER_DAY = 0.5
+BOND_DECAY_CHECK_SECS = 3600.0
+
+# Model-driven bond change via <bond>N</bond>
+BOND_TAG_MIN = -8.0
+BOND_TAG_MAX = 5.0
+BOND_TAG_COOLDOWN = 300.0   # seconds between applied NEGATIVE tags per user
+BOND_TAG_DAILY_CAP = 15.0   # max bond gained per user per day through positive tags
+
+# Special relationship (saved-info line `Relationship: label | description`)
+SPECIAL_MIN_BOND = 25.0
+SPECIAL_STRAINED_BOND = 15.0
+SPECIAL_LABEL_MAX = 30
+SPECIAL_DESC_MAX = 80
+SPECIAL_DECAY_MULT = 0.5
+SPECIAL_LEAK_MULT = 1.5
+SPECIAL_WARMTH_BONUS = 0.05
+
+# Emotion vector
+EMOTIONS = ("joy", "warmth", "excitement", "sadness", "anger", "anxiety", "surprise", "fatigue", "curiosity")
+POSITIVE_EMOS = ("joy", "warmth", "excitement", "curiosity")
+NEGATIVE_EMOS = ("sadness", "anger", "anxiety")
+
+EMO_BASELINE = {
+    "joy": 0.25, "warmth": 0.30, "excitement": 0.10, "sadness": 0.05, "anger": 0.02,
+    "anxiety": 0.05, "surprise": 0.0, "fatigue": 0.05, "curiosity": 0.20,
+}
+EMO_HALFLIFE = {
+    "joy": 40 * 60, "warmth": 90 * 60, "excitement": 20 * 60, "sadness": 120 * 60, "anger": 60 * 60,
+    "anxiety": 45 * 60, "surprise": 60, "fatigue": 180 * 60, "curiosity": 30 * 60,
+}
+VALENCE_WEIGHTS = {
+    "joy": 1.0, "warmth": 0.7, "excitement": 0.5, "curiosity": 0.2,
+    "sadness": -1.0, "anger": -1.0, "anxiety": -0.5, "fatigue": -0.2, "surprise": 0.0,
+}
+
+EMO_INTERACTIONS = [
+    ("anger", "joy", -0.004), ("anger", "warmth", -0.002), ("anger", "curiosity", -0.002),
+    ("warmth", "anger", -0.003),
+    ("joy", "sadness", -0.003), ("joy", "anxiety", -0.001), ("joy", "curiosity", +0.001),
+    ("sadness", "joy", -0.0015), ("sadness", "anxiety", +0.002),
+    ("anxiety", "curiosity", -0.002),
+    ("excitement", "curiosity", +0.001),
+    ("fatigue", "excitement", -0.003), ("fatigue", "curiosity", -0.002), ("fatigue", "joy", -0.0015),
+]
+
+TEMP_ANXIETY_COEF = 0.0005
+TEMP_ANGER_COEF = 0.0004
+TEMP_WARMTH_COEF = 0.0004
+
+# Tags: <mood>joy+8 anxiety+3 | reason</mood> (1 unit = 0.01 intensity)
+EMO_UNIT = 0.01
+EMO_TAG_MAX = 15
+EMO_TAG_MAX_COUNT = 3
+LEGACY_TAG_SCALE = 0.15 / 30.0
+TAG_DEDUPE_WINDOW = 120.0
+
+OFFLINE_DECAY_MULT = {"anger": 0.4, "anxiety": 0.4, "sadness": 0.7}
+
+USER_OFFSET_MAX = 0.6
+USER_HALFLIFE = {
+    "joy": 90 * 60, "warmth": 180 * 60, "excitement": 60 * 60, "sadness": 150 * 60, "anger": 120 * 60,
+    "anxiety": 90 * 60, "surprise": 120, "curiosity": 60 * 60,
+}
+USER_IDLE_PURGE = 24 * 3600.0
+LEAK_POSITIVE = 0.25
+LEAK_NEGATIVE = 0.10
+LEAK_HOURLY_CAP = 0.10
+BOND_FORGIVE_DIV = 250.0
+BOND_FORGIVE_MAX = 0.4
+BOND_WARMTH_PER_POINT = 0.002
+BOND_WARMTH_MAX = 0.2
+WARMTH_FLOOR_PER_BOND = 0.001
+
+COLLAPSE_MIN = 30.0
+COLLAPSE_MAX = 60.0
+COLLAPSE_TEMP = 0.15
+COLLAPSE_SECOND_MIN = 0.12
+COLLAPSE_SECOND_RATIO = 0.5
+COLLAPSE_OVERRIDE_DELTA = 0.12
+COLLAPSE_OVERRIDE_SURPRISE = 0.4
+COLLAPSE_OVERRIDE_MARGIN = 0.2
+COLLAPSE_OVERRIDE_MIN_GAP = 10.0
+
+CAUSE_REASON_MAX = 60
+CAUSE_MIN_DELTA = 0.03
+CAUSE_SHOW_MIN = 0.05
+CAUSE_PRUNE_MIN = 0.01
+CAUSE_MAX_AGE = 48 * 3600.0
+CAUSE_MAX_PER_EMO = 3
+CAUSE_TOTAL_MAX = 200
+
+FATIGUE_RISE_HALFLIFE = 45 * 60
+FATIGUE_SLEEP_HALFLIFE = 30 * 60
+FATIGUE_ACTIVITY_WINDOW = 1800.0
+FATIGUE_ACTIVITY_FULL = 60
+FATIGUE_ACTIVITY_MAX = 0.30
+FATIGUE_NIGHT_BONUS = 0.30
+FATIGUE_LATE_BONUS = 0.10
+FATIGUE_WAKE_BUMP = 0.15
+SLEEP_JOY_REGEN_PER_TICK = 0.001
+SLEEP_JOY_CAP = 0.45
+
+LABEL_THRESHOLDS = {"surprise": 0.30, "anger": 0.12, "sadness": 0.12, "excitement": 0.15, "joy": 0.12, "warmth": 0.10}
+LABEL_DELIGHTED_JOY = 0.65
+EMO_DRIFT_STD = 0.002
+
+MOOD_LABEL_DESC = {
+    "default": "Hoshino đang ở trạng thái thường ngày, thong thả và lười biếng đúng kiểu.",
+    "happy": "Hoshino đang vui vẻ, ấm áp và dễ gần.",
+    "delighted": "Hoshino đang cực kỳ vui, tíu tít và tinh nghịch.",
+    "motivated": "Hoshino đang tràn đầy năng lượng và hào hứng.",
+    "sad": "Hoshino đang buồn và hơi thu mình lại.",
+    "angered": "Hoshino đang thực sự giận, lạnh nhạt và khó chịu.",
+    "shocked": "Hoshino đang sốc, hoàn toàn bất ngờ.",
+}

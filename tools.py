@@ -215,7 +215,26 @@ async def execute_tool_call(name: str, args: dict, author_id: int, channel_id: i
         if not add and not remove:
             return "Không có nội dung để cập nhật."
 
+        from affection import special
+
+        relationship_touched = any(special.is_relationship_item(r) for r in remove)
+        prepared_add = []
+        for note in add:
+            if special.is_relationship_item(note):
+                err, normalized = special.validate(author_id, special.extract_value(note))
+                if err:
+                    return err
+                prepared_add.append(special.memory_line(normalized))
+                relationship_touched = True
+                if not any(special.is_relationship_item(r) for r in remove):
+                    remove = [*remove, "Relationship:"]
+            else:
+                prepared_add.append(note)
+        add = prepared_add
+
         new_memory = await db.apply_memory_diff(author_id, add=add, remove=remove)
+        if relationship_touched:
+            special.invalidate(author_id)
         logger.info(
             "Đã cập nhật memory (diff) cho author_id=%s: add=%s remove=%s", author_id, add, remove
         )
