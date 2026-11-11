@@ -1,4 +1,5 @@
-﻿import os
+﻿import json
+import os
 import re
 from datetime import timedelta, timezone
 from dotenv import load_dotenv
@@ -15,7 +16,42 @@ LM_BASE_URL = os.environ.get("LM_BASE_URL", "https://localhost:1234/v1")
 LM_API_KEY = os.environ.get("LM_API_KEY", "")
 MODEL_NAME = os.environ.get("MODEL_NAME", "google/gemma4-12b-it")
 REFLECTION_MODEL_NAME = MODEL_NAME
+
+
+def _parse_model_choices(raw: str) -> dict[str, str]:
+    """Đọc MODEL_LIST (JSON {"tên": "id"}) từ env, bỏ qua entry không hợp lệ."""
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+
+    choices: dict[str, str] = {}
+    for name, model_id in data.items():
+        name = str(name).strip()
+        model_id = str(model_id).strip()
+        if not name or not model_id:
+            continue
+        if len(model_id) > 100:   # Discord select option value limit
+            continue
+        choices[name[:100]] = model_id
+    return choices
+
+
+MODEL_CHOICES = _parse_model_choices(
+    os.environ.get("MODEL_LIST") or os.environ.get("MODELS") or ""
+)
+
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")
+
+try:
+    STATUS_CHANNEL_ID = int(os.environ.get("STATUS_CHANNEL_ID", "0") or 0)
+except ValueError:
+    STATUS_CHANNEL_ID = 0   # 0 = tắt thông báo bật/tắt bot
 
 JINA_API_KEY = ""
 

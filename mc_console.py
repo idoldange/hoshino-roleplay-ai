@@ -6,6 +6,7 @@ from datetime import datetime
 from client import bot
 from logger import logger
 from affection import affection
+from status_notifier import notify_offline
 
 _START_TS = time.time()
 
@@ -57,6 +58,7 @@ def console_command_listener(loop: asyncio.AbstractEventLoop):
 
 async def _shutdown():
     try:
+        await notify_offline()
         await affection.shutdown()
         await bot.close()
     except Exception:

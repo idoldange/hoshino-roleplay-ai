@@ -195,6 +195,7 @@ async def call_model(
     on_first_send=None,
     affection_context=None,
     reply_context=None,
+    model_name: str | None = None,
 ):
     """
     stream_reply=False (mặc định): hành vi y hệt bản cũ — trả về (reply, messages)
@@ -249,7 +250,7 @@ async def call_model(
         #log prompt
         for iteration in range(config.MAX_TOOL_ITER):
             create_kwargs = dict(
-                model=config.MODEL_NAME,
+                model=model_name or config.MODEL_NAME,
                 messages=messages,
                 temperature=0.7,
                 stream=True,

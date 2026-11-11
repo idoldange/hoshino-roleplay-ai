@@ -13,6 +13,8 @@ from mc_console import mc_log, print_fake_mc_done_log
 from memory_reflection import reflect_and_update_memory
 from daily_memory import daily_summary_loop
 from model import IGNORE_REPLY, call_model
+from model_settings import get_model_for_user
+from status_notifier import notify_online
 from affection import affection
 
 
@@ -20,6 +22,7 @@ _channel_requests = {}
 _affection_started = False
 _daily_summary_stop = None
 _daily_summary_task = None
+_status_online_sent = False
 
 
 async def _get_reply_context(message: discord.Message) -> str | None:
@@ -55,6 +58,7 @@ async def _run_request(channel, request, state):
         if True: #async with channel.typing():
             try:
                 nsfw = request["nsfw"]
+                user_model = await get_model_for_user(request_author.id)
                 reply, used_messages = await call_model(
                     channel, user_text, request_author,
                     image_parts=request["image_parts"], message_id=message.id,
@@ -62,6 +66,7 @@ async def _run_request(channel, request, state):
                     reply_message=message, on_first_send=mark_started,
                     affection_context=request["affection_context"],
                     reply_context=request["reply_context"],
+                    model_name=user_model,
                 )
             except asyncio.CancelledError:
                 raise
@@ -142,8 +147,10 @@ def _enqueue_request(channel, request):
 
 @bot.event
 async def on_ready():
-    global _affection_started, _daily_summary_stop, _daily_summary_task
+    global _affection_started, _daily_summary_stop, _daily_summary_task, _status_online_sent
     await db.init()
+    if not _status_online_sent:
+        _status_online_sent = await notify_online()
     if not _affection_started:
         await affection.initialize()
         await affection.start()

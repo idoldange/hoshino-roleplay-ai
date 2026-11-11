@@ -111,6 +111,15 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_global_history_user ON global_history(user_id)"
             )
             await db.execute(
+                """CREATE TABLE IF NOT EXISTS user_settings (
+                    user_id INTEGER NOT NULL,
+                    key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    updated_at TEXT,
+                    PRIMARY KEY (user_id, key)
+                )"""
+            )
+            await db.execute(
                 """CREATE TABLE IF NOT EXISTS user_lust (
                     user_id INTEGER PRIMARY KEY,
                     lust_value REAL NOT NULL DEFAULT 0.0,
@@ -210,6 +219,25 @@ class Database:
     async def clear_personalization(self, user_id: int):
         async with aiosqlite.connect(self.path) as db:
             await db.execute("DELETE FROM user_personalization WHERE user_id = ?", (user_id,))
+            await db.commit()
+
+    async def get_user_setting(self, user_id: int, key: str, default: str | None = None) -> str | None:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT value FROM user_settings WHERE user_id = ? AND key = ?", (user_id, key)
+            ) as cur:
+                row = await cur.fetchone()
+                return row["value"] if row else default
+
+    async def set_user_setting(self, user_id: int, key: str, value: str):
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """INSERT INTO user_settings (user_id, key, value, updated_at) VALUES (?, ?, ?, ?)
+                   ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at""",
+                (user_id, key, value, now),
+            )
             await db.commit()
 
     async def append_memory(self, user_id: int, note: str):
