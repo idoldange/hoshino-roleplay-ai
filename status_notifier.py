@@ -48,3 +48,7 @@ async def notify_offline() -> bool:
     if ok:
         _offline_sent = True
     return ok
+
+
+async def notify_restart() -> bool:
+    return await _send("🔄 Hoshino đang khởi động lại...")

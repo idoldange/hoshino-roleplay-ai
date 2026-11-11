@@ -1,32 +1,52 @@
 import asyncio
 import os
 import signal
+import sys
 import threading
 
 import config
 from client import bot
+from control_server import start_control_server
 from logger import logger
-from mc_console import console_command_listener, mc_log, print_fake_mc_startup_logs
-from status_notifier import notify_offline
+from mc_console import console_command_listener
+from status_notifier import notify_offline, notify_restart
 import events  # noqa: F401
+
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+except Exception:
+    pass
 
 
 async def main():
     logger.info("=== Khởi động Hoshino Bot === LOG_LEVEL=%s LOG_DIR=%s", config.LOG_LEVEL, os.path.abspath(config.LOG_DIR))
-    print_fake_mc_startup_logs()
     loop = asyncio.get_running_loop()
 
-    # Ctrl+C/SIGTERM -> đặt event để kịp gửi thông báo tắt trước khi đóng bot.
+    # Ctrl+C/SIGTERM hoặc HTTP control -> đặt event để kịp gửi thông báo trước khi đóng bot.
     stop_event = asyncio.Event()
+    shutdown_state = {"restart": False}
 
-    def _request_stop(*_args):
-        loop.call_soon_threadsafe(stop_event.set)
+    def _request_action(action: str):
+        shutdown_state["restart"] = action == "restart"
+        try:
+            loop.call_soon_threadsafe(stop_event.set)
+        except RuntimeError:
+            stop_event.set()
+
+    def _request_stop_signal(*_args):
+        _request_action("stop")
 
     try:
-        signal.signal(signal.SIGINT, _request_stop)
-        signal.signal(signal.SIGTERM, _request_stop)
+        signal.signal(signal.SIGINT, _request_stop_signal)
+        signal.signal(signal.SIGTERM, _request_stop_signal)
     except (AttributeError, OSError, ValueError):
         logger.debug("Không cài được signal handler dừng bot", exc_info=True)
+
+    control_runner = None
+    try:
+        control_runner = await start_control_server(_request_action)
+    except Exception:
+        logger.exception("Không mở được control server ở port %s", config.CONTROL_PORT)
 
     threading.Thread(target=console_command_listener, args=(loop,), daemon=True).start()
 
@@ -38,12 +58,28 @@ async def main():
         )
 
         if stop_task in done and not bot_task.done():
-            await notify_offline()
+            if shutdown_state["restart"]:
+                await notify_restart()
+            else:
+                await notify_offline()
             await bot.close()
         elif bot_task.done() and not stop_task.done():
             stop_task.cancel()
 
         await bot_task
+
+    if control_runner is not None:
+        try:
+            await control_runner.cleanup()
+        except Exception:
+            logger.exception("Không đóng được control server")
+
+    if shutdown_state["restart"]:
+        logger.info("Đang khởi động lại bot...")
+        os.execv(
+            sys.executable,
+            [sys.executable, os.path.abspath(__file__), *sys.argv[1:]],
+        )
 
 
 if __name__ == "__main__":
@@ -58,5 +94,4 @@ if __name__ == "__main__":
             logger.exception("Bot crash ngoài ý muốn, thoát chương trình.")
             raise
         finally:
-            mc_log("Server stopped.")
             logger.info("=== Hoshino Bot đã dừng ===")

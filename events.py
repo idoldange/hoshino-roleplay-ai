@@ -9,7 +9,7 @@ from client import bot, db
 from commands import handle_command
 from formatting import split_message
 from logger import logger
-from mc_console import mc_log, print_fake_mc_done_log
+from mc_console import print_fake_mc_done_log
 from memory_reflection import reflect_and_update_memory
 from daily_memory import daily_summary_loop
 from model import IGNORE_REPLY, call_model
@@ -149,6 +149,7 @@ def _enqueue_request(channel, request):
 @bot.event
 async def on_ready():
     global _affection_started, _daily_summary_stop, _daily_summary_task, _status_online_sent
+    print_fake_mc_done_log()   # MCSS nhận bot đã start ngay khi Discord ready
     await db.init()
     if not _status_online_sent:
         _status_online_sent = await notify_online()
@@ -160,8 +161,6 @@ async def on_ready():
         _daily_summary_stop = asyncio.Event()
         _daily_summary_task = asyncio.create_task(daily_summary_loop(_daily_summary_stop))
         logger.info("daily_summary.task_created task_id=%s", id(_daily_summary_task))
-    print_fake_mc_done_log()
-    mc_log(f"Đã đăng nhập Discord với tài khoản: {bot.user}", thread="Hoshino")
     logger.info("Bot sẵn sàng: %s (id=%s), đang ở %d server", bot.user, bot.user.id, len(bot.guilds))
 
 

@@ -80,6 +80,12 @@ try:
 except ValueError:
     STATUS_CHANNEL_ID = 0   # 0 = tắt thông báo bật/tắt bot
 
+try:
+    CONTROL_PORT = int(os.environ.get("CONTROL_PORT", "1234") or 1234)
+except ValueError:
+    CONTROL_PORT = 1234
+CONTROL_SECRET = os.environ.get("CONTROL_SECRET", "")
+
 JINA_API_KEY = ""
 
 DB_PATH = _database_path("database/hoshino_bot.db")
@@ -124,7 +130,9 @@ GMT7 = timezone(timedelta(hours=7))
 
 LOG_DIR = "logs"
 LOG_LEVEL = "INFO"
+# Bật/tắt log ra console. Toàn bộ log luôn được ghi vào file.
 LOG_TO_CONSOLE = True
+LOG_CONSOLE_LEVEL = "WARNING"   # chỉ dùng khi LOG_TO_CONSOLE = False
 
 AFFECTION_DB_PATH = DB_PATH
 AFFECTION_BASE_EXP_MIN = 0.8

@@ -25,9 +25,11 @@ _CONTROL_TAG_RE = re.compile(
     r"|</mood>\s*\[[+-]?\d+(?:\.\d+)?\]"
     r"|</mood>\s*[+-]?\d+(?:\.\d+)?\s*>"
     r"|</mood>\s*[+-]?\d+(?:\.\d+)?\s*</mood>"
-    r"|</?:?mood\s*/?>",
+    r"|<mood\s*/>"
+    r"|</:?mood\s*>",
     re.IGNORECASE | re.DOTALL,
 )
+_UNCLOSED_MOOD_RE = re.compile(r"<:?mood\b.*$", re.IGNORECASE | re.DOTALL)
 _CONTROL_TAG_OPEN_RE = re.compile(
     r"<(?:mood|shocked|bond|aroused|lust_change|lust|experience_change|bond_change)\b|</?:?mood\b|<:mood\b",
     re.IGNORECASE,
@@ -75,7 +77,10 @@ class _ControlTagFilter:
     def finish(self) -> str:
         text = self._pending
         self._pending = ""
-        return _CONTROL_TAG_RE.sub("", text)
+        text = _CONTROL_TAG_RE.sub("", text)
+        if _UNCLOSED_MOOD_RE.search(text):
+            logger.warning("[tags] bỏ <mood> chưa đóng ở cuối stream")
+        return _UNCLOSED_MOOD_RE.sub("", text)
 
 
 def split_reasoning(raw_content: str, existing_reasoning: str | None = None):

@@ -22,8 +22,15 @@ _file_handler = RotatingFileHandler(
 _file_handler.setFormatter(_log_formatter)
 logger.addHandler(_file_handler)
 
-if config.LOG_TO_CONSOLE:
+_console_level = (
+    config.LOG_LEVEL if config.LOG_TO_CONSOLE
+    else getattr(config, "LOG_CONSOLE_LEVEL", "WARNING")
+)
+if _console_level:
     _console_handler = logging.StreamHandler()
+    _console_handler.setLevel(
+        getattr(logging, str(_console_level).upper(), logging.WARNING)
+    )
     _console_handler.setFormatter(_log_formatter)
     logger.addHandler(_console_handler)
 

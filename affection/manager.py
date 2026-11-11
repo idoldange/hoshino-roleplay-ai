@@ -34,7 +34,18 @@ from affection.lust import lust as _lust
 from affection.experience import experience as _experience
 
 # Anything between <mood> and </mood>: new emotion syntax or a plain number.
-_MOOD_ANY_RE = re.compile(r"<mood>(?P<body>.*?)</mood>", re.IGNORECASE | re.DOTALL)
+# Closing tag is optional so a truncated/unclosed tag does not leak its body into the reply.
+_MOOD_ANY_RE = re.compile(r"<mood>(?P<body>.*?)(?:</mood>|$)", re.IGNORECASE | re.DOTALL)
+
+# Last-resort recovery for a bare mood body with no tags at all, e.g.
+# "Uhe~ ... curiosity+5 surprise+2 | bị gọi bất ngờ".
+_MOOD_EMO_NAMES = "joy|warmth|excitement|sadness|anger|anxiety|surprise|fatigue|curiosity"
+_BARE_MOOD_RE = re.compile(
+    rf"(?P<lead>^|[ \t])(?P<body>"
+    rf"(?:(?:{_MOOD_EMO_NAMES})[ \t]*[+\-−–—][ \t]*\d+(?:\.\d+)?[ \t]*){{1,3}}"
+    rf"(?:\|[^\n]*)?)$",
+    re.IGNORECASE,
+)
 
 # Malformed legacy variants the model has been seen to produce (kept from the old parser).
 _MOOD_LEGACY_RE = re.compile(
@@ -154,6 +165,12 @@ class AffectionManager:
                     deltas.pop("surprise", None)
                 if deltas:
                     _mood.apply_emotions(deltas, reason, user_id=uid, is_dm=is_dm, now=now)
+                if not re.search(r"</mood>\s*$", match.group(0), re.IGNORECASE):
+                    from console import console
+                    console.log(
+                        f"[mood] recovered unclosed <mood> tag (emotions={list(deltas)}), stripped",
+                        "WARNING",
+                    )
             except Exception as e:  # a bad tag must never break the reply
                 from console import console
                 console.log(f"[mood] tag ignored: {e}", "WARN")
@@ -190,6 +207,27 @@ class AffectionManager:
                 except (ValueError, TypeError):
                     pass
             text = _BOND_TAG_RE.sub("", text)
+
+        # Model sometimes drops the tags entirely and appends a bare mood body.
+        text = text.rstrip()
+        bare = _BARE_MOOD_RE.search(text)
+        if bare:
+            body = bare.group("body")
+            try:
+                deltas, reason, _legacy = _mood.parse_tag_body(body)
+                if shocked_reason:
+                    deltas.pop("surprise", None)
+                if deltas and _first_time(turn_id, "mood", body, now):
+                    _mood.apply_emotions(deltas, reason, user_id=uid, is_dm=is_dm, now=now)
+                from console import console
+                console.log(
+                    f"[mood] recovered bare mood body (emotions={list(deltas)}), stripped",
+                    "WARNING",
+                )
+            except Exception as e:
+                from console import console
+                console.log(f"[mood] bare mood ignored: {e}", "WARN")
+            text = text[:bare.start()].rstrip()
 
         return text.strip()
 
