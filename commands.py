@@ -31,14 +31,20 @@ def make_bar(val: float, max_val: float = 100.0, length: int = 10) -> str:
     return "▰" * filled + "▱" * (length - filled)
 
 
-def _model_options(current_model_id: str | None) -> list[discord.SelectOption]:
+def _model_options(current_model_name: str | None) -> list[discord.SelectOption]:
     options = []
-    marked_default = False
-    for name, model_id in model_settings.available_models().items():
-        is_default = not marked_default and model_id == current_model_id
-        if is_default:
-            marked_default = True
-        options.append(discord.SelectOption(label=name, value=model_id, default=is_default))
+    for name, info in model_settings.available_models().items():
+        description = info.get("description") or (
+            "Nhận ảnh" if info.get("multimodal", True) else "Chỉ text"
+        )
+        options.append(
+            discord.SelectOption(
+                label=name,
+                value=name,
+                description=description[:100],
+                default=name == current_model_name,
+            )
+        )
     return options
 
 
@@ -62,9 +68,9 @@ class ModelSelectView(discord.ui.View):
             )
             return
 
-        model_id = self.select.values[0]
+        selection = self.select.values[0]
         try:
-            name = await model_settings.set_model_for_user(self.owner_id, model_id)
+            name = await model_settings.set_model_for_user(self.owner_id, selection)
         except Exception:
             logger.exception("Không lưu được model đã chọn cho user=%s", self.owner_id)
             await interaction.response.send_message(
@@ -78,11 +84,8 @@ class ModelSelectView(discord.ui.View):
             )
             return
 
-        marked_default = False
         for option in self.select.options:
-            option.default = not marked_default and option.value == model_id
-            if option.default:
-                marked_default = True
+            option.default = option.value == selection
         self.select.disabled = True
         self.stop()
         await interaction.response.edit_message(
@@ -161,14 +164,15 @@ async def handle_command(message: discord.Message, user_text: str) -> bool:
             logger.debug("Bỏ qua lệnh model: chưa cấu hình MODEL_LIST")
             return True
 
-        current_id = await model_settings.get_model_for_user(message.author.id)
-        current_name = model_settings.name_for(current_id)
-        current_line = (
-            f"Model hiện tại của bạn: **{current_name}**"
-            if current_name
-            else "Model hiện tại của bạn: không có trong MODEL_LIST"
-        )
-        view = ModelSelectView(_model_options(current_id), message.author.id)
+        current_info = await model_settings.get_model_for_user(message.author.id)
+        current_name = current_info.get("name") or model_settings.name_for(current_info.get("id"))
+        if current_name:
+            current_line = f"Model hiện tại của bạn: **{current_name}**"
+            if not current_info.get("multimodal", True):
+                current_line += " (không xem được ảnh)"
+        else:
+            current_line = "Model hiện tại của bạn: không có trong MODEL_LIST"
+        view = ModelSelectView(_model_options(current_info.get("name")), message.author.id)
         await message.channel.send(
             f"**Chọn model cho riêng bạn**\n{current_line}", view=view
         )

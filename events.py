@@ -58,7 +58,7 @@ async def _run_request(channel, request, state):
         if True: #async with channel.typing():
             try:
                 nsfw = request["nsfw"]
-                user_model = await get_model_for_user(request_author.id)
+                model_info = request.get("model_info") or await get_model_for_user(request_author.id)
                 reply, used_messages = await call_model(
                     channel, user_text, request_author,
                     image_parts=request["image_parts"], message_id=message.id,
@@ -66,7 +66,8 @@ async def _run_request(channel, request, state):
                     reply_message=message, on_first_send=mark_started,
                     affection_context=request["affection_context"],
                     reply_context=request["reply_context"],
-                    model_name=user_model,
+                    model_name=model_info.get("id"),
+                    allow_images=model_info.get("multimodal", True),
                 )
             except asyncio.CancelledError:
                 raise
@@ -197,7 +198,10 @@ async def on_message(message: discord.Message):
             return
         user_text = content
 
-    extra_text, image_parts = await process_attachments(message)
+    model_info = await get_model_for_user(message.author.id)
+    extra_text, image_parts = await process_attachments(
+        message, allow_images=model_info.get("multimodal", True)
+    )
     if extra_text:
         user_text = f"{user_text}\n\n{extra_text}".strip()
 
@@ -219,6 +223,7 @@ async def on_message(message: discord.Message):
             "user_text": user_text,
             "image_parts": image_parts,
             "nsfw": nsfw,
+            "model_info": model_info,
             "affection_context": affection_context,
             "reply_context": reply_context,
         },

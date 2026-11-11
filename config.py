@@ -18,8 +18,20 @@ MODEL_NAME = os.environ.get("MODEL_NAME", "google/gemma4-12b-it")
 REFLECTION_MODEL_NAME = MODEL_NAME
 
 
-def _parse_model_choices(raw: str) -> dict[str, str]:
-    """Đọc MODEL_LIST (JSON {"tên": "id"}) từ env, bỏ qua entry không hợp lệ."""
+def _as_bool(value, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _parse_model_choices(raw: str) -> dict[str, dict]:
+    """Đọc MODEL_LIST từ env.
+
+    Hỗ trợ cả format cũ {"tên": "id"} và format mới
+    {"tên": {"id": "model-id", "multimodal": true/false}}.
+    """
     raw = (raw or "").strip()
     if not raw:
         return {}
@@ -30,15 +42,30 @@ def _parse_model_choices(raw: str) -> dict[str, str]:
     if not isinstance(data, dict):
         return {}
 
-    choices: dict[str, str] = {}
-    for name, model_id in data.items():
+    choices: dict[str, dict] = {}
+    for name, entry in data.items():
         name = str(name).strip()
-        model_id = str(model_id).strip()
+        description = ""
+        if isinstance(entry, str):
+            model_id = entry.strip()
+            multimodal = True
+        elif isinstance(entry, dict):
+            raw_id = entry.get("id")
+            model_id = str(raw_id).strip() if raw_id is not None else ""
+            multimodal = _as_bool(entry.get("multimodal"), default=True)
+            description = str(entry.get("description") or entry.get("desc") or "").strip()
+        else:
+            continue
+
         if not name or not model_id:
             continue
         if len(model_id) > 100:   # Discord select option value limit
             continue
-        choices[name[:100]] = model_id
+        choices[name[:100]] = {
+            "id": model_id,
+            "multimodal": multimodal,
+            "description": description[:100],
+        }
     return choices
 
 

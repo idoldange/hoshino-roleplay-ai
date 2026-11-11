@@ -6,7 +6,7 @@ import config
 from logger import logger
 
 
-async def process_attachments(message_or_attachments):
+async def process_attachments(message_or_attachments, allow_images: bool = True):
     attachments = getattr(message_or_attachments, "attachments", message_or_attachments)
     extra_text_parts = []
     image_parts = []
@@ -23,6 +23,11 @@ async def process_attachments(message_or_attachments):
         )
 
         if is_image:
+            if not allow_images:
+                extra_text_parts.append(
+                    f"[Ảnh '{att.filename}' - model hiện tại không xem được ảnh nên đã bỏ qua]"
+                )
+                continue
             if len(image_parts) >= config.MAX_IMAGES_PER_MESSAGE:
                 extra_text_parts.append(f"[Bỏ qua ảnh '{att.filename}' vì đã đủ số ảnh tối đa cho 1 tin nhắn]")
                 continue

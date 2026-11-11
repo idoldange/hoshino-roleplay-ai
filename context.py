@@ -60,6 +60,7 @@ def _project_daily_summary(summary_row: dict | None, allow_h_preference: bool) -
 async def build_messages_from_channel(
     channel: discord.abc.Messageable, current_user_text: str, current_author, image_parts=None,
     message_id=None, enable_nsfw=False, affection_context=None, reply_context=None,
+    allow_images: bool = True,
 ):
     collected = []
     async for m in channel.history(limit=config.HISTORY_SCAN_LIMIT):
@@ -119,7 +120,9 @@ async def build_messages_from_channel(
             role = "user"
             author_prefix = f"{m.author.display_name}: "
 
-        attachment_text, attachment_images = await process_attachments(m)
+        attachment_text, attachment_images = await process_attachments(
+            m, allow_images=allow_images
+        )
         text_content = m.clean_content.strip()
         if attachment_text:
             text_content = f"{text_content}\n\n{attachment_text}".strip()
@@ -135,8 +138,13 @@ async def build_messages_from_channel(
         msgs.append({"role": role, "content": content})
 
     text_part = f"{current_author.display_name}: {current_user_text}"
-    if image_parts:
+    if image_parts and allow_images:
         msgs.append({"role": "user", "content": [{"type": "text", "text": text_part}] + image_parts})
     else:
+        if image_parts:
+            text_part += (
+                f"\n\n[Hệ thống: người dùng đã gửi {len(image_parts)} ảnh, "
+                "nhưng model hiện tại không xem được ảnh nên đã bỏ qua]"
+            )
         msgs.append({"role": "user", "content": text_part})
     return msgs

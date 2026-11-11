@@ -196,6 +196,7 @@ async def call_model(
     affection_context=None,
     reply_context=None,
     model_name: str | None = None,
+    allow_images: bool = True,
 ):
     """
     stream_reply=False (mặc định): hành vi y hệt bản cũ — trả về (reply, messages)
@@ -213,6 +214,7 @@ async def call_model(
     messages = await build_messages_from_channel(
         channel, user_text, author, image_parts=image_parts, message_id=message_id,
         enable_nsfw=nsfw, affection_context=affection_context, reply_context=reply_context,
+        allow_images=allow_images,
     ) 
     # check perm coi dc gui tin nhan ko
     #channel la message.channel
