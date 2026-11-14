@@ -1,25 +1,26 @@
 import discord
 
 import config
+import endpoint_profiles
 import model_settings
 from client import db
 from logger import logger
 from affection import affection
 
-_MODEL_HELP_LINE = (
-    f"`{config.BOT_PREFIX} model` - Đổi model AI của riêng bạn (dropdown)\n"
-    if config.MODEL_CHOICES else ""
+_MODEL_HELP_LINE = f"`{config.BOT_PREFIX} model` - Đổi model AI của riêng bạn (dropdown)\n"
+_CONFIG_HELP_LINE = (
+    f"`{config.BOT_PREFIX} config` - Cấu hình endpoint/model riêng bằng embed và modal\n"
 )
 
 HELP_TEXT = f"""**Lệnh của Hoshino Bot** (prefix: `{config.BOT_PREFIX}`)
 `{config.BOT_PREFIX} <nội dung>` - Nói chuyện với Hoshino
-`{config.BOT_PREFIX} clear` - Đánh dấu mốc, Hoshino sẽ không đọc lịch sử cũ hơn mốc này nữa
+{_CONFIG_HELP_LINE}{_MODEL_HELP_LINE}`{config.BOT_PREFIX} clear` - Đánh dấu mốc, Hoshino sẽ không đọc lịch sử cũ hơn mốc này nữa
 `{config.BOT_PREFIX} addchannel` - Bật auto-respond cho kênh hiện tại (Hoshino trả lời mọi tin nhắn, không cần prefix/mention)
 `{config.BOT_PREFIX} removechannel` - Tắt auto-respond cho kênh hiện tại
 `{config.BOT_PREFIX} remember <nội dung>` - Nhờ Hoshino ghi nhớ điều gì đó về bạn
 `{config.BOT_PREFIX} forget` - Xoá toàn bộ ghi nhớ về bạn
 `{config.BOT_PREFIX} reasoning` - Xem reasoning gần nhất mà model đã suy nghĩ ở kênh này (nếu model có hỗ trợ)
-{_MODEL_HELP_LINE}`{config.BOT_PREFIX} affection` - Xem mood, bond, lust, experience và quan hệ đặc biệt hiện tại
+`{config.BOT_PREFIX} affection` - Xem mood, bond, lust, experience và quan hệ đặc biệt hiện tại
 `{config.BOT_PREFIX} lust reset` - Reset lust về 0 (manual)
 `{config.BOT_PREFIX} help` - Xem lại danh sách lệnh này
 
@@ -31,44 +32,74 @@ def make_bar(val: float, max_val: float = 100.0, length: int = 10) -> str:
     return "▰" * filled + "▱" * (length - filled)
 
 
-def _model_options(current_model_name: str | None) -> list[discord.SelectOption]:
-    options = []
-    for name, info in model_settings.available_models().items():
-        description = info.get("description") or (
-            "Nhận ảnh" if info.get("multimodal", True) else "Chỉ text"
-        )
-        options.append(
-            discord.SelectOption(
-                label=name,
-                value=name,
-                description=description[:100],
-                default=name == current_model_name,
-            )
-        )
-    return options
-
-
 class ModelSelectView(discord.ui.View):
-    def __init__(self, options: list[discord.SelectOption], owner_id: int):
+    PAGE_SIZE = 25
+
+    def __init__(self, models: dict[str, dict], owner_id: int, current_model_name: str | None):
         super().__init__(timeout=180)
         self.owner_id = int(owner_id)
-        self.select = discord.ui.Select(
+        self.models = list(models.items())
+        self.current_model_name = current_model_name
+        current_index = next(
+            (index for index, (name, _) in enumerate(self.models) if name == current_model_name),
+            0,
+        )
+        self.page = current_index // self.PAGE_SIZE
+        self._build_items()
+
+    def _build_items(self):
+        self.clear_items()
+        start = self.page * self.PAGE_SIZE
+        entries = self.models[start:start + self.PAGE_SIZE]
+        options = [
+            discord.SelectOption(
+                label=name[:100],
+                value=name,
+                description=(info.get("description") or (
+                    "Nhận ảnh" if info.get("multimodal", True) else "Chỉ text"
+                ))[:100],
+                default=name == self.current_model_name,
+            )
+            for name, info in entries
+        ]
+        select = discord.ui.Select(
             placeholder="Chọn model...",
             options=options,
             min_values=1,
             max_values=1,
         )
-        self.select.callback = self._on_select
-        self.add_item(self.select)
+        select.callback = self._on_select
+        self.add_item(select)
+        if self.page > 0:
+            previous = discord.ui.Button(label="Trước", style=discord.ButtonStyle.secondary)
+            previous.callback = self._previous_page
+            self.add_item(previous)
+        if start + self.PAGE_SIZE < len(self.models):
+            following = discord.ui.Button(label="Tiếp", style=discord.ButtonStyle.secondary)
+            following.callback = self._next_page
+            self.add_item(following)
 
-    async def _on_select(self, interaction: discord.Interaction):
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
             await interaction.response.send_message(
                 "Uhe~... cái dropdown này của người khác mà Sensei.", ephemeral=True
             )
-            return
+            return False
+        return True
 
-        selection = self.select.values[0]
+    async def _change_page(self, interaction: discord.Interaction, step: int):
+        self.page += step
+        self._build_items()
+        await interaction.response.edit_message(view=self)
+
+    async def _previous_page(self, interaction: discord.Interaction):
+        await self._change_page(interaction, -1)
+
+    async def _next_page(self, interaction: discord.Interaction):
+        await self._change_page(interaction, 1)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        selection = interaction.data["values"][0]
         try:
             name = await model_settings.set_model_for_user(self.owner_id, selection)
         except Exception:
@@ -84,13 +115,260 @@ class ModelSelectView(discord.ui.View):
             )
             return
 
-        for option in self.select.options:
-            option.default = option.value == selection
-        self.select.disabled = True
         self.stop()
         await interaction.response.edit_message(
-            content=f"Đã đổi model của bạn sang **{name}**.", view=self
+            content=f"Đã đổi model của bạn sang **{name}**.", view=None
         )
+
+
+def _config_embed(profiles: list[dict], encryption_ready: bool) -> discord.Embed:
+    embed = discord.Embed(
+        title="Cấu hình endpoint riêng",
+        description=(
+            "Chọn profile rồi bấm **Thêm / sửa**. API key chỉ nhập trong modal và được mã hóa trước khi lưu DB."
+        ),
+        color=discord.Color.blue(),
+    )
+    if not encryption_ready:
+        embed.description += (
+            "\n\n⚠️ Chưa cấu hình `CUSTOM_ENDPOINT_ENCRYPTION_KEY` trong `.env`; "
+            "hãy đặt secret trước khi lưu profile."
+        )
+    if profiles:
+        lines = [
+            f"• **{profile['name']}** — {len(profile['models'])} model"
+            for profile in profiles
+        ]
+        embed.add_field(name="Profile của bạn", value="\n".join(lines), inline=False)
+    else:
+        embed.add_field(
+            name="Profile của bạn",
+            value="Chưa có profile. Bấm **Thêm / sửa** để tạo.",
+            inline=False,
+        )
+    embed.add_field(
+        name="Multimodal",
+        value="Tự đoán theo model ID; trong modal có thể đặt `model-id=true`, `false` hoặc `auto`.",
+        inline=False,
+    )
+    embed.set_footer(text="Model sẽ tự dò từ endpoint; model riêng hiện trong !hoshino model.")
+    return embed
+
+
+class EndpointProfileModal(discord.ui.Modal, title="Cấu hình endpoint profile"):
+    def __init__(self, owner_id: int, config_view, profile: dict | None = None):
+        super().__init__(timeout=300)
+        self.owner_id = int(owner_id)
+        self.config_view = config_view
+        self.profile_id = profile.get("id") if profile else None
+        self.name_input = discord.ui.TextInput(
+            label="Tên profile",
+            placeholder="Ví dụ: OpenRouter",
+            default=profile.get("name", "") if profile else None,
+            max_length=40,
+        )
+        self.endpoint_input = discord.ui.TextInput(
+            label="OpenAI-compatible endpoint",
+            placeholder="https://host.example/v1",
+            default=profile.get("base_url", "") if profile else None,
+            max_length=500,
+        )
+        self.keys_input = discord.ui.TextInput(
+            label="API key (nhiều key cách nhau bằng dấu phẩy)",
+            placeholder="Để trống khi sửa nếu muốn giữ key hiện tại",
+            required=False,
+            style=discord.TextStyle.paragraph,
+            max_length=4000,
+        )
+        overrides = profile.get("overrides", {}) if profile else {}
+        override_text = "\n".join(
+            f"{model_id}={'true' if enabled else 'false'}"
+            for model_id, enabled in overrides.items()
+        )
+        self.overrides_input = discord.ui.TextInput(
+            label="Override multimodal (không bắt buộc)",
+            placeholder="Mỗi dòng: model-id=true/false/auto",
+            default=override_text[:4000] if override_text else None,
+            required=False,
+            style=discord.TextStyle.paragraph,
+            max_length=4000,
+        )
+        self.add_item(self.name_input)
+        self.add_item(self.endpoint_input)
+        self.add_item(self.keys_input)
+        self.add_item(self.overrides_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            profile, model_count = await endpoint_profiles.save_profile(
+                self.owner_id,
+                self.profile_id,
+                self.name_input.value,
+                self.endpoint_input.value,
+                self.keys_input.value,
+                self.overrides_input.value,
+            )
+            model_settings.invalidate_user_cache(self.owner_id)
+            self.config_view.profiles = await endpoint_profiles.list_profiles(self.owner_id)
+            self.config_view.selected_profile_id = profile["id"]
+            self.config_view._build_items()
+            if self.config_view.config_message:
+                await self.config_view.config_message.edit(
+                    embed=_config_embed(
+                        self.config_view.profiles,
+                        endpoint_profiles.encryption_configured(),
+                    ),
+                    view=self.config_view,
+                )
+            action = "Cập nhật" if self.profile_id else "Tạo"
+            await interaction.followup.send(
+                f"{action} profile **{profile['name']}** thành công; đã dò được {model_count} model. "
+                f"Dùng `{config.BOT_PREFIX} model` để chọn model.",
+                ephemeral=True,
+            )
+        except endpoint_profiles.ProfileStoreError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+        except Exception:
+            logger.exception("Không lưu được endpoint profile của user=%s", self.owner_id)
+            await interaction.followup.send(
+                "Lưu profile không thành công. Kiểm tra cấu hình endpoint rồi thử lại.",
+                ephemeral=True,
+            )
+
+
+class DeleteProfileView(discord.ui.View):
+    def __init__(self, config_view, profile_id: str, owner_id: int):
+        super().__init__(timeout=60)
+        self.config_view = config_view
+        self.profile_id = profile_id
+        self.owner_id = int(owner_id)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Bảng xác nhận này không phải của bạn.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Xóa profile", style=discord.ButtonStyle.danger)
+    async def confirm_delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            name = await endpoint_profiles.delete_profile(self.owner_id, self.profile_id)
+            model_settings.invalidate_user_cache(self.owner_id)
+            self.config_view.profiles = await endpoint_profiles.list_profiles(self.owner_id)
+            self.config_view.selected_profile_id = None
+            self.config_view._build_items()
+            if self.config_view.config_message:
+                await self.config_view.config_message.edit(
+                    embed=_config_embed(
+                        self.config_view.profiles,
+                        endpoint_profiles.encryption_configured(),
+                    ),
+                    view=self.config_view,
+                )
+            await interaction.followup.send(f"Đã xóa profile **{name}**.", ephemeral=True)
+        except Exception:
+            logger.exception("Không xóa được endpoint profile của user=%s", self.owner_id)
+            await interaction.followup.send("Xóa profile không thành công.", ephemeral=True)
+        self.stop()
+
+    @discord.ui.button(label="Hủy", style=discord.ButtonStyle.secondary)
+    async def cancel_delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="Đã hủy.", view=None)
+        self.stop()
+
+
+class EndpointConfigView(discord.ui.View):
+    def __init__(self, owner_id: int, profiles: list[dict]):
+        super().__init__(timeout=300)
+        self.owner_id = int(owner_id)
+        self.profiles = profiles
+        self.selected_profile_id = None
+        self.config_message = None
+        self._build_items()
+
+    def _build_items(self):
+        self.clear_items()
+        if self.profiles:
+            options = [
+                discord.SelectOption(
+                    label=profile["name"],
+                    value=profile["id"],
+                    description=f"{len(profile['models'])} model",
+                    default=profile["id"] == self.selected_profile_id,
+                )
+                for profile in self.profiles
+            ]
+            select = discord.ui.Select(
+                placeholder="Chọn profile để sửa hoặc xóa...",
+                options=options,
+                min_values=1,
+                max_values=1,
+            )
+            select.callback = self._select_profile
+            self.add_item(select)
+
+        edit_button = discord.ui.Button(
+            label="Thêm / sửa profile",
+            style=discord.ButtonStyle.primary,
+            disabled=not endpoint_profiles.encryption_configured(),
+        )
+        edit_button.callback = self._edit_profile
+        self.add_item(edit_button)
+        if self.profiles:
+            delete_button = discord.ui.Button(
+                label="Xóa profile",
+                style=discord.ButtonStyle.danger,
+                disabled=self.selected_profile_id is None,
+            )
+            delete_button.callback = self._delete_profile
+            self.add_item(delete_button)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "Uhe~... bảng cấu hình này của người khác mà Sensei.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def _select_profile(self, interaction: discord.Interaction):
+        self.selected_profile_id = interaction.data["values"][0]
+        self._build_items()
+        await interaction.response.edit_message(view=self)
+
+    async def _edit_profile(self, interaction: discord.Interaction):
+        profile = None
+        if self.selected_profile_id:
+            try:
+                profile = await endpoint_profiles.get_profile(
+                    self.owner_id, self.selected_profile_id
+                )
+            except endpoint_profiles.ProfileStoreError as exc:
+                await interaction.response.send_message(str(exc), ephemeral=True)
+                return
+        await interaction.response.send_modal(
+            EndpointProfileModal(self.owner_id, self, profile)
+        )
+
+    async def _delete_profile(self, interaction: discord.Interaction):
+        if not self.selected_profile_id:
+            await interaction.response.send_message(
+                "Chọn profile trước đã nha.", ephemeral=True
+            )
+            return
+        profile = next(
+            (p for p in self.profiles if p["id"] == self.selected_profile_id), None
+        )
+        await interaction.response.send_message(
+            f"Chắc chắn xóa profile **{profile['name'] if profile else 'đã chọn'}**?",
+            view=DeleteProfileView(self, self.selected_profile_id, self.owner_id),
+            ephemeral=True,
+        )
+
+    async def on_timeout(self):
+        self.stop()
 
 
 async def handle_command(message: discord.Message, user_text: str) -> bool:
@@ -106,6 +384,19 @@ async def handle_command(message: discord.Message, user_text: str) -> bool:
 
     if lowered == "help":
         await message.channel.send(HELP_TEXT)
+        return True
+
+    if lowered == "config":
+        try:
+            profiles = await endpoint_profiles.list_profiles(message.author.id)
+        except endpoint_profiles.ProfileStoreError as exc:
+            await message.channel.send(str(exc))
+            return True
+        view = EndpointConfigView(message.author.id, profiles)
+        view.config_message = await message.channel.send(
+            embed=_config_embed(profiles, endpoint_profiles.encryption_configured()),
+            view=view,
+        )
         return True
 
     if lowered in ("addchannel", "add channel"):
@@ -160,11 +451,15 @@ async def handle_command(message: discord.Message, user_text: str) -> bool:
         return True
 
     if lowered == "model":
-        if not model_settings.available_models():
-            logger.debug("Bỏ qua lệnh model: chưa cấu hình MODEL_LIST")
+        try:
+            models = await model_settings.available_models(message.author.id)
+            current_info = await model_settings.get_model_for_user(message.author.id)
+        except endpoint_profiles.ProfileStoreError as exc:
+            await message.channel.send(str(exc))
             return True
-
-        current_info = await model_settings.get_model_for_user(message.author.id)
+        if not models:
+            await message.channel.send("Chưa có model nào được cấu hình.")
+            return True
         current_name = current_info.get("name") or model_settings.name_for(current_info.get("id"))
         if current_name:
             current_line = f"Model hiện tại của bạn: **{current_name}**"
@@ -172,7 +467,7 @@ async def handle_command(message: discord.Message, user_text: str) -> bool:
                 current_line += " (không xem được ảnh)"
         else:
             current_line = "Model hiện tại của bạn: không có trong MODEL_LIST"
-        view = ModelSelectView(_model_options(current_info.get("name")), message.author.id)
+        view = ModelSelectView(models, message.author.id, current_name)
         await message.channel.send(
             f"**Chọn model cho riêng bạn**\n{current_line}", view=view
         )

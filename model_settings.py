@@ -1,6 +1,9 @@
 """Per-user model selection, persisted in the user_settings DB table."""
 
+import hashlib
+
 import config
+import endpoint_profiles
 from client import db
 from logger import logger
 
@@ -8,9 +11,31 @@ SETTING_KEY = "model_name"
 _user_models: dict[int, dict] = {}
 
 
-def available_models() -> dict[str, dict]:
-    """Mapping of display name -> {"id", "multimodal", "description"}, from MODEL_LIST."""
-    return config.MODEL_CHOICES
+async def available_models(user_id: int) -> dict[str, dict]:
+    """Return configured models plus the user's decrypted custom endpoint models."""
+    choices = {name: dict(info) for name, info in config.MODEL_CHOICES.items()}
+    for profile in await endpoint_profiles.list_profiles(user_id):
+        overrides = profile.get("overrides") or {}
+        for model_id in profile["models"]:
+            name = f"{profile['name']} / {model_id}"
+            if len(name) > 100:
+                suffix = hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
+                name = f"{name[:90]} [{suffix}]"
+            while name in choices:
+                name = f"{name[:90]} [{hashlib.sha1(name.encode('utf-8')).hexdigest()[:8]}]"
+
+            multimodal = overrides.get(model_id)
+            if multimodal is None:
+                multimodal = endpoint_profiles.detect_multimodal(model_id)
+            capability = "Nhận ảnh" if multimodal else "Chỉ text"
+            choices[name] = {
+                "id": model_id,
+                "multimodal": multimodal,
+                "description": f"[{profile['name']}] {capability} · sửa: !hoshino config"[:100],
+                "profile_id": profile["id"],
+                "base_url": profile["base_url"],
+            }
+    return choices
 
 
 def name_for(model_id: str) -> str | None:
@@ -34,6 +59,10 @@ def _default_info() -> dict:
     return _named(None, {"id": config.MODEL_NAME, "multimodal": True, "description": ""})
 
 
+def invalidate_user_cache(user_id: int) -> None:
+    _user_models.pop(int(user_id), None)
+
+
 async def get_model_for_user(user_id: int) -> dict:
     """Model info this user selected, falling back to MODEL_NAME from .env."""
     user_id = int(user_id)
@@ -46,12 +75,13 @@ async def get_model_for_user(user_id: int) -> dict:
         logger.exception("Không đọc được model đã lưu của user=%s", user_id)
         saved = None
 
-    if saved in config.MODEL_CHOICES:
-        info = _named(saved, config.MODEL_CHOICES[saved])
+    choices = await available_models(user_id)
+    if saved in choices:
+        info = _named(saved, choices[saved])
     else:
         # Tương thích dữ liệu cũ: trước đây setting lưu model id thay vì tên.
         legacy = next(
-            ((name, i) for name, i in config.MODEL_CHOICES.items() if i.get("id") == saved),
+            ((name, item) for name, item in choices.items() if item.get("id") == saved),
             None,
         )
         info = _named(*legacy) if legacy else _default_info()
@@ -62,7 +92,8 @@ async def get_model_for_user(user_id: int) -> dict:
 
 async def set_model_for_user(user_id: int, model_name: str) -> str | None:
     """Save a model choice (display name) for one user. Returns the name, or None if invalid."""
-    info = config.MODEL_CHOICES.get(model_name)
+    choices = await available_models(user_id)
+    info = choices.get(model_name)
     if info is None:
         return None
 

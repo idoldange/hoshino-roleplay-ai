@@ -20,6 +20,7 @@ venv.bak/
 *.sqlite
 *.sqlite3
 *.log
+/tests/test_endpoint_profiles.py
 
 # Models, Checkpoints & Large Data
 *.bin

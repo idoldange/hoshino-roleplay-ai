@@ -4,6 +4,7 @@ from collections import deque
 import discord
 
 import config
+import endpoint_profiles
 from attachments import process_attachments
 from client import bot, db
 from commands import handle_command
@@ -68,15 +69,25 @@ async def _run_request(channel, request, state):
                     reply_context=request["reply_context"],
                     model_name=model_info.get("id"),
                     allow_images=model_info.get("multimodal", True),
+                    model_info=model_info,
                 )
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.exception(
-                    "Lỗi xử lý tin nhắn từ %s (%s) trong channel=%s",
-                    request_author, request_author.id, channel.id,
-                )
-                reply = f"...lỗi rồi, chắc server sập. ({e})"
+                if (request.get("model_info") or {}).get("profile_id"):
+                    logger.error(
+                        "Endpoint profile failed for user=%s channel=%s error_type=%s",
+                        request_author.id, channel.id, type(e).__name__,
+                    )
+                else:
+                    logger.exception(
+                        "Lỗi xử lý tin nhắn từ %s (%s) trong channel=%s",
+                        request_author, request_author.id, channel.id,
+                    )
+                if (request.get("model_info") or {}).get("profile_id"):
+                    reply = "...endpoint model đang lỗi, Sensei kiểm tra lại profile trong `!hoshino config` nha."
+                else:
+                    reply = f"...lỗi rồi, chắc server sập. ({e})"
                 used_messages = None
                 mark_started()
                 for index, chunk in enumerate(split_message(reply, 1900)):
@@ -197,7 +208,11 @@ async def on_message(message: discord.Message):
             return
         user_text = content
 
-    model_info = await get_model_for_user(message.author.id)
+    try:
+        model_info = await get_model_for_user(message.author.id)
+    except endpoint_profiles.ProfileStoreError as exc:
+        await message.reply(str(exc))
+        return
     extra_text, image_parts = await process_attachments(
         message, allow_images=model_info.get("multimodal", True)
     )

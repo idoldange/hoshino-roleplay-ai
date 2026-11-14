@@ -3,6 +3,7 @@ import re
 from types import SimpleNamespace
 
 import discord
+from openai import AsyncOpenAI
 
 import config
 from client import client_ai, db
@@ -11,6 +12,7 @@ from formatting import cut_partial_tag, scan_thought, split_message
 from logger import logger
 from tools import TOOLS_SCHEMA, execute_tool_call
 from affection import affection
+import endpoint_profiles
 
 IGNORE_REPLY = "<!-- ignore -->"
 _CONTROL_TAG_RE = re.compile(
@@ -188,6 +190,33 @@ async def _flush_lines(channel, buf: str, send_state: dict) -> tuple[str, bool]:
     return buf, sent
 
 
+async def _create_model_stream(create_kwargs: dict, author_id: int, model_info: dict | None):
+    profile_id = (model_info or {}).get("profile_id")
+    if not profile_id:
+        return await client_ai.chat.completions.create(**create_kwargs), None
+
+    auth = await endpoint_profiles.get_profile_auth(author_id, profile_id)
+    for attempt in range(auth["key_count"]):
+        client = AsyncOpenAI(base_url=auth["base_url"], api_key=auth["api_key"])
+        try:
+            stream = await client.chat.completions.create(**create_kwargs)
+            return stream, client
+        except Exception as exc:
+            await client.close()
+            if (
+                not endpoint_profiles.is_retryable_provider_error(exc)
+                or attempt + 1 >= auth["key_count"]
+            ):
+                raise
+            auth = await endpoint_profiles.advance_profile_key(author_id, profile_id)
+            logger.warning(
+                "Endpoint profile rate/temporary error; trying key %d/%d (status=%s)",
+                auth["key_index"] + 1, auth["key_count"],
+                getattr(exc, "status_code", None),
+            )
+    raise endpoint_profiles.ProfileStoreError("Không gọi được endpoint profile.")
+
+
 async def call_model(
     channel: discord.abc.Messageable,
     user_text: str,
@@ -202,6 +231,7 @@ async def call_model(
     reply_context=None,
     model_name: str | None = None,
     allow_images: bool = True,
+    model_info: dict | None = None,
 ):
     """
     stream_reply=False (mặc định): hành vi y hệt bản cũ — trả về (reply, messages)
@@ -267,13 +297,31 @@ async def call_model(
                 create_kwargs.update(tools=TOOLS_SCHEMA, tool_choice="auto", reasoning_effort="minimal")
 
             try:
-                stream = await client_ai.chat.completions.create(**create_kwargs)
+                stream, stream_client = await _create_model_stream(
+                    create_kwargs, author.id, model_info
+                )
             except Exception as e:
+                profile_id = (model_info or {}).get("profile_id")
+                if profile_id and (
+                    endpoint_profiles.is_retryable_provider_error(e)
+                    or getattr(e, "status_code", None) not in {400, 404, 422}
+                ):
+                    logger.error(
+                        "Endpoint profile request failed for author=%s (status=%s)",
+                        author.id, getattr(e, "status_code", None),
+                    )
+                    raise
                 if use_tools:
-                    logger.warning("Backend không nhận tool calling (%s), thử lại không kèm tools.", e)
+                    logger.warning("Backend không nhận tool calling, thử lại không kèm tools.")
                     use_tools = False
                     continue
-                logger.exception("call_model lỗi khi gọi API cho author=%s channel=%s", author.id, channel.id)
+                if profile_id:
+                    logger.error(
+                        "Endpoint profile request failed for author=%s (status=%s)",
+                        author.id, getattr(e, "status_code", None),
+                    )
+                else:
+                    logger.exception("call_model lỗi khi gọi API cho author=%s channel=%s", author.id, channel.id)
                 raise e
 
             content_buf = ""
@@ -324,8 +372,14 @@ async def call_model(
                                 line_buf, did_send = await _flush_lines(channel, line_buf, send_state)
                                 sent_any = sent_any or did_send
             except Exception:
-                logger.exception("Lỗi khi đọc stream cho author=%s channel=%s", author.id, channel.id)
+                if (model_info or {}).get("profile_id"):
+                    logger.error("Lỗi khi đọc stream endpoint profile cho author=%s", author.id)
+                else:
+                    logger.exception("Lỗi khi đọc stream cho author=%s channel=%s", author.id, channel.id)
                 raise
+            finally:
+                if stream_client is not None:
+                    await stream_client.close()
 
             # Gộp reasoning_buf (đã cộng dồn suốt stream) với mọi khối suy luận
             # còn sót lại trong content_buf (phòng trường hợp stream_reply=False),

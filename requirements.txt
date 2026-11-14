@@ -6,3 +6,4 @@ aiohttp>=3.9.0
 ddgs>=1.0.0
 psutil>=5.9.0
 wmi>=1.5.1; sys_platform == "win32"
+cryptography>=42.0
