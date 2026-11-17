@@ -30,6 +30,7 @@ from config import AFFECTION_AROUSED_BOND_THRESHOLD, TAG_DEDUPE_WINDOW
 from affection import mood as _mood
 from affection import bond as _bond
 from affection import special as _special
+from affection import relation as _relation
 from affection.lust import lust as _lust
 from affection.experience import experience as _experience
 
@@ -70,6 +71,8 @@ _BOND_TAG_RE = re.compile(
 
 _AROUSED_TAG_RE = re.compile(r"<aroused\s*/>", re.IGNORECASE)
 
+_REL_TAG_RE = re.compile(r"<rel>(?P<body>.*?)</rel>", re.IGNORECASE | re.DOTALL)
+
 # (turn_id, kind, normalized content) -> time first applied. The same turn can pass through the parser more than
 # once (text sent alongside a tool call, then the final reply); an identical tag must only count once.
 _seen: dict[tuple, float] = {}
@@ -94,6 +97,7 @@ class AffectionManager:
         await _bond.initialize()
         await _lust.initialize()
         await _experience.initialize()
+        await _relation.initialize()
 
     async def start(self):
         """Pass to asyncio.create_task()."""
@@ -113,6 +117,7 @@ class AffectionManager:
         await _experience.shutdown()
         await _mood.shutdown()
         await _bond.shutdown()
+        await _relation.shutdown()
 
     # Mood (sync - in-memory)
 
@@ -207,6 +212,16 @@ class AffectionManager:
                 except (ValueError, TypeError):
                     pass
             text = _BOND_TAG_RE.sub("", text)
+
+        # <rel>trust+3 tension-2 | reason</rel> - the current speaker only; always stripped.
+        for match in _REL_TAG_RE.finditer(text):
+            if uid is not None and _first_time(turn_id, "rel", match.group("body"), now):
+                try:
+                    _relation.apply_tag(match.group("body"), uid, is_dm, now)
+                except Exception as e:
+                    from console import console
+                    console.log(f"[rel] tag ignored: {e}", "WARN")
+        text = _REL_TAG_RE.sub("", text)
 
         # Model sometimes drops the tags entirely and appends a bare mood body.
         text = text.rstrip()
@@ -326,7 +341,7 @@ class AffectionManager:
         b = _bond.get(user_id)
         console.log(f"[bond] on_interaction() after get(): bond={b:.2f}", "DEBUG")
         current_mood = _mood.get_for(user_id)   # how she feels toward THIS user scales the exp
-        exp = _bond.exp_for_message(b, mood=current_mood, mood_delta=mood_delta)
+        exp = _bond.exp_for_message(b, mood=current_mood, mood_delta=mood_delta) * _relation.exp_mult(user_id)
         b = _bond.add_and_get(user_id, exp)  # fire and forget - shutdown waits for all tasks
 
         if mood_delta != 0.0:
@@ -345,6 +360,7 @@ class AffectionManager:
             "bond_line":    _bond.prompt_line(b),
             "bond_value":   b,
             "special":      _special.prompt_line(user_id),
+            "rel":          _relation.prompt_line(user_id, is_dm),
             "lust_value":   lust_value,
             "aroused_level": aroused_level,
             "experience_value": await _experience.get_experience(user_id),
@@ -372,6 +388,8 @@ class AffectionManager:
         lines = [ctx["bond_line"]]
         if ctx.get("special"):
             lines.append(ctx["special"])
+        if ctx.get("rel"):
+            lines.append(ctx["rel"])
         lines.append(mood)
         if ctx.get("mood_why"):
             lines.append("Why: " + "; ".join(ctx["mood_why"]))

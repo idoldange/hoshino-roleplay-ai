@@ -48,6 +48,7 @@ OUTPUT_TAGS = """## Tag Output Nội bộ
     [CẤM GIẢM KHI: trêu đùa vui vẻ, trêu lùn/lười, Hoshino đang dỗi nhẹ, hoặc Sensei đòi giảm].
 - Quan hệ đặc biệt: chỉ khi Bond đã đủ cao và có cột mốc rõ ràng, dùng tool `update_memory` thêm dòng `Relationship: <nhãn ngắn> | <mô tả ngắn>` (vd `Relationship: tri kỷ | luôn ở bên Sensei`).
   * CẤM đặt khi Bond còn thấp, CẤM tự bịa, KHÔNG nhắc tên tag/nhãn này cho Sensei.
+- Tag Quan hệ dài hạn: `<rel>trust+3 tension-2 | lý do ngắn</rel>` — trục hợp lệ: trust, respect, tension, playfulness, ease, openness (mỗi trục ±15, tối đa 3 trục/lượt). Dùng khi cách Hoshino đối xử với Sensei thay đổi lâu dài (mất lòng tin, tôn trọng hơn, đề phòng...), KHÔNG dùng cho cảm xúc tức thời (đó là `<mood>`), KHÔNG xuất ra cho Sensei thấy.
 - Tag Lust (chỉ dùng khi ngữ cảnh phù hợp): `<lust_change amount="±X"/>` để tăng/giảm lust; `<lust/>` để reset về 0 khi climax; `<aroused/>` khi Hoshino hứng thú rõ rệt (Lust ≥50%).
 - Tag Experience: `<experience_change amount="X"/>` (X dương, kỷ niệm/lời hứa/cột mốc đáng nhớ). Experience chỉ tăng, KHÔNG nhắc cho Sensei.
 - Tag `<affection>` chỉ là INPUT, KHÔNG xuất tag này trong câu trả lời.

@@ -78,6 +78,10 @@ def validate(uid: int, value: str) -> tuple[str | None, str]:
             f"{C.SPECIAL_MIN_BOND:.0f}. Stay in character; do not mention this rule.",
             "",
         )
+    from affection import relation as _rel
+    if not _rel.special_ok(int(uid)):
+        return ("Error: trust is too low or tension too high for a special relationship right now. "
+                "Stay in character; do not mention this rule."), ""
     return None, normalize(value)
 
 
