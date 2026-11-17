@@ -565,7 +565,7 @@ def wake():
     _touch(True)
     if was_asleep:
         _add_global("fatigue", C.FATIGUE_WAKE_BUMP)
-        _add_cause(None, "fatigue", C.FATIGUE_WAKE_BUMP, "she just woke up from sleeping", system=True)
+        _add_cause(None, "fatigue", C.FATIGUE_WAKE_BUMP, "vừa ngủ dậy", system=True)
 
 
 def just_woke(window: float = C.WAKE_DISPLAY_WINDOW) -> bool:
@@ -672,7 +672,7 @@ def _note_temperature(temp: float | None, now: float):
         bucket = "over" if temp >= C.TEMP_OVER else "hot" if temp >= C.TEMP_HOT else "ok"
     if bucket != "ok" and bucket != _temp_bucket and now - _last_temp_cause > 600.0:
         _add_cause(None, "anxiety", 0.08,
-                   "the machine she runs on is overheating" if bucket == "over" else "the machine she runs on is running hot",
+                   "trời nóng bức" if bucket == "over" else "trời oi bức",
                    system=True, now=now)
         _last_temp_cause = now
     _temp_bucket = bucket
@@ -686,7 +686,7 @@ def _note_night(now: float):
     key = (dt - timedelta(hours=7)).date().isoformat()
     if key != _night_cause_day:
         _night_cause_day = key
-        _add_cause(None, "fatigue", 0.15, "it is very late at night", system=True, now=now)
+        _add_cause(None, "fatigue", 0.15, "đã khuya lắm rồi", system=True, now=now)
 
 
 # Tick

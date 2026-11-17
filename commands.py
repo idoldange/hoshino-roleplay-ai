@@ -34,6 +34,12 @@ _AGE_VI = (
     (re.compile(r"~(\d+)m ago"), r"~\1 phút trước"),
     (re.compile(r"~(\d+)h ago"), r"~\1 giờ trước"),
 )
+_REASON_VI = {
+    "she just woke up from sleeping": "vừa ngủ dậy",
+    "the machine she runs on is overheating": "trời nóng bức",
+    "the machine she runs on is running hot": "trời oi bức",
+    "it is very late at night": "đã khuya lắm rồi",
+}
 
 
 def _vi_intensity(x: float) -> str:
@@ -57,8 +63,10 @@ def _vi_blend(vec: dict, dom: list[str]) -> str:
 def _vi_why(line: str) -> str:
     match = re.match(r"^([a-z]+): ", line)
     if match and match.group(1) in _EMO_VI:
-        line = _EMO_VI[match.group(1)] + ": " + line[match.end():]
+        line = _EMO_VI[match.group(1)] + " — " + line[match.end():]
     line = line.replace("a private matter", "chuyện riêng tư")
+    for english, vietnamese in _REASON_VI.items():
+        line = line.replace(english, vietnamese)
     for pattern, replacement in _AGE_VI:
         line = pattern.sub(replacement, line)
     return line
@@ -543,15 +551,23 @@ async def handle_command(message: discord.Message, user_text: str) -> bool:
         mood_label = _MOOD_VI.get(d["label"], d["label"])
         blend = _vi_blend(vec, dom)
         if d["label"] != "default":
-            mood_block = f"> {d['desc']}\n> *{blend}*"
+            mood_block = f"- {d['desc']}\n- *{blend}*"
         else:
-            mood_block = f"> *{blend}*"
+            mood_block = f"- *{blend}*"
         parts = [
             f"🌸 **Cảm xúc** — {mood_label} ({d['valence']:+.1f})\n{mood_block}",
-            f"💕 **Bond** — {bond_bar} {bond:.1f}/100\n> {bond_rank}",
         ]
         if d.get("why"):
-            parts.append("☕ **Lý do:** " + "; ".join(_vi_why(w) for w in d["why"]))
+            seen, why_lines = set(), []
+            for w in d["why"]:
+                line = _vi_why(w)
+                key = re.sub(r" \(.*\)$", "", line)
+                if key in seen:
+                    continue
+                seen.add(key)
+                why_lines.append("- " + line)
+            parts.append("☕ **Lý do:**\n" + "\n".join(why_lines))
+        parts.append(f"💕 **Bond** — {bond_bar} {bond:.1f}/100\n- {bond_rank}")
         if vec:
             top = sorted(vec.items(), key=lambda kv: -kv[1])[:5]
             parts.append("📊 **Chi tiết:** " + " · ".join(
