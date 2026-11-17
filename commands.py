@@ -1,3 +1,5 @@
+import re
+
 import discord
 
 import config
@@ -11,6 +13,55 @@ _MODEL_HELP_LINE = f"`{config.BOT_PREFIX} model` - Đổi model AI của riêng 
 _CONFIG_HELP_LINE = (
     f"`{config.BOT_PREFIX} config` - Cấu hình endpoint/model riêng bằng embed và modal\n"
 )
+
+_MOOD_VI = {
+    "default": "Bình thường", "happy": "Vui vẻ", "delighted": "Rất vui",
+    "motivated": "Hứng khởi", "sad": "Buồn", "angered": "Đang giận", "shocked": "Sốc",
+}
+_EMO_VI = {
+    "joy": "vui vẻ", "warmth": "ấm áp", "excitement": "háo hức", "sadness": "buồn bã",
+    "anger": "tức giận", "anxiety": "lo lắng", "surprise": "ngạc nhiên", "fatigue": "mệt mỏi",
+    "curiosity": "tò mò",
+}
+_REL_AXIS_VI = {
+    "trust": "tin tưởng", "respect": "tôn trọng", "tension": "căng thẳng",
+    "playfulness": "tinh nghịch", "ease": "thoải mái", "openness": "cởi mở",
+}
+_REL_WORD_VI = {"very high": "rất cao", "high": "cao", "low": "thấp", "very low": "rất thấp"}
+_INTENSITY_VI = ((0.75, "mãnh liệt"), (0.55, "mạnh"), (0.35, "vừa"), (0.15, "nhẹ"))
+_AGE_VI = (
+    (re.compile(r"\bjust now\b"), "vừa xong"),
+    (re.compile(r"~(\d+)m ago"), r"~\1 phút trước"),
+    (re.compile(r"~(\d+)h ago"), r"~\1 giờ trước"),
+)
+
+
+def _vi_intensity(x: float) -> str:
+    for threshold, word in _INTENSITY_VI:
+        if x >= threshold:
+            return word
+    return "thoáng qua"
+
+
+def _vi_blend(vec: dict, dom: list[str]) -> str:
+    if not dom:
+        return "Tâm trạng khá bình ổn"
+    out = f"Chủ yếu là {_EMO_VI.get(dom[0], dom[0])} ({_vi_intensity(vec.get(dom[0], 0.0))})"
+    if len(dom) > 1:
+        out += f", pha chút {_EMO_VI.get(dom[1], dom[1])} ({_vi_intensity(vec.get(dom[1], 0.0))})"
+    if "fatigue" not in dom and vec.get("fatigue", 0.0) >= 0.30:
+        out += ", cũng hơi mệt mỏi"
+    return out + "."
+
+
+def _vi_why(line: str) -> str:
+    match = re.match(r"^([a-z]+): ", line)
+    if match and match.group(1) in _EMO_VI:
+        line = _EMO_VI[match.group(1)] + ": " + line[match.end():]
+    line = line.replace("a private matter", "chuyện riêng tư")
+    for pattern, replacement in _AGE_VI:
+        line = pattern.sub(replacement, line)
+    return line
 
 HELP_TEXT = f"""**Lệnh của Hoshino Bot** (prefix: `{config.BOT_PREFIX}`)
 `{config.BOT_PREFIX} <nội dung>` - Nói chuyện với Hoshino
@@ -487,21 +538,43 @@ async def handle_command(message: discord.Message, user_text: str) -> bool:
         exp = await affection.get_experience(message.author.id)
         bond_bar = make_bar(bond, 100.0, 10)
         lust_bar = make_bar(lust, 100.0, 10)
+        vec = d.get("vec") or {}
+        dom = list(d.get("dominant") or [])
+        mood_label = _MOOD_VI.get(d["label"], d["label"])
+        blend = _vi_blend(vec, dom)
+        if d["label"] != "default":
+            mood_block = f"> {d['desc']}\n> *{blend}*"
+        else:
+            mood_block = f"> *{blend}*"
         parts = [
-            f"Mood: {d['label']} ({d['valence']:.1f})\n> {d['desc']} {d['blend']}".strip(),
-            f"💕 Bond: {bond_bar} {bond:.1f}/100 — {bond_rank}",
+            f"🌸 **Cảm xúc** — {mood_label} ({d['valence']:+.1f})\n{mood_block}",
+            f"💕 **Bond** — {bond_bar} {bond:.1f}/100\n> {bond_rank}",
         ]
         if d.get("why"):
-            parts.append("Lý do: " + "; ".join(d["why"]))
+            parts.append("☕ **Lý do:** " + "; ".join(_vi_why(w) for w in d["why"]))
+        if vec:
+            top = sorted(vec.items(), key=lambda kv: -kv[1])[:5]
+            parts.append("📊 **Chi tiết:** " + " · ".join(
+                f"{_EMO_VI.get(k, k)} {v * 100:.0f}%" for k, v in top))
+        from affection import mood as mood_mod, relation
+        if mood_mod.is_sleeping():
+            parts.append("😴 Đang ngủ")
+        rel_axes = relation.levels(message.author.id)
+        if rel_axes:
+            parts.append("↔️ **Quan hệ:** " + ", ".join(
+                f"{_REL_AXIS_VI.get(a, a)} {_REL_WORD_VI.get(w, w)}" for a, w in rel_axes))
+        aroused = await affection.check_aroused_state(message.author.id)
+        if aroused:
+            parts.append(f"🔥 **Aroused** — lv{aroused}")
         if is_dm:
-            parts.append(f"🔥 Lust: {lust_bar} {lust:.1f}%")
+            parts.append(f"🔥 **Lust** — {lust_bar} {lust:.1f}%")
         from affection import experience as experience_mgr, special
         if exp > 0:
             exp_label, exp_desc = experience_mgr.get_experience_label(exp)
-            parts.append(f"✨ Experience: {exp:.1f} — {exp_label}: {exp_desc}")
+            parts.append(f"✨ **Kỷ niệm vặt** — {exp:.1f} · {exp_label}: {exp_desc}")
         rel = special.embed_line(message.author.id)
         if rel:
-            parts.append(f"💞 Quan hệ đặc biệt: {rel}")
+            parts.append(f"💞 **Quan hệ đặc biệt** — {rel.strip()}")
         await message.channel.send("\n".join(parts))
         return True
 

@@ -170,6 +170,6 @@ def embed_line(uid: int | None) -> str:
         return ""
     return (
         f"**{info['label']}**"
-        + (" *(strained)*" if info["strained"] else "")
+        + (" *(đang xa cách)*" if info["strained"] else "")
         + (f" - {info['desc']}" if info["desc"] else "")
     )

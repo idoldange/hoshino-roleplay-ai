@@ -121,15 +121,15 @@ class ExperienceManager:
             Tuple of (label, description)
         """
         if experience >= 100:
-            return "Soulmate", "Lifetime of treasured memories together"
+            return "Tri kỷ", "Cả đời kỷ niệm quý giá bên nhau"
         elif experience >= 75:
-            return "Intimate", "Deep bond, many significant moments"
+            return "Thân thiết", "Gắn bó sâu đậm, nhiều khoảnh khắc đáng nhớ"
         elif experience >= 50:
-            return "Deep", "Many treasured memories"
+            return "Sâu đậm", "Rất nhiều kỷ niệm quý giá"
         elif experience >= 25:
-            return "Familiar", "Some shared experiences"
+            return "Quen thân", "Đã có vài trải nghiệm chung"
         else:
-            return "Newcomer", "New memories forming"
+            return "Người mới", "Kỷ niệm đang dần hình thành"
 
     def make_bar(self, val: float, max_val: float = 100.0, length: int = 10) -> str:
         """Create a visual bar for experience."""
