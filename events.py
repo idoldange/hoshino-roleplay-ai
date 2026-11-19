@@ -193,12 +193,9 @@ async def on_message(message: discord.Message):
         handled = await handle_command(message, cmd_text)
         if handled:
             return
-        user_text = cmd_text
+        user_text = content  # giữ nguyên, không lọc prefix
     elif is_mention:
-        user_text = content
-        for m in message.mentions:
-            user_text = user_text.replace(f"<@{m.id}>", "").replace(f"<@!{m.id}>", "")
-        user_text = user_text.strip()
+        user_text = content  # giữ nguyên, không lọc mention
     elif is_dm:
         user_text = content
     elif is_hoshino_in_content:

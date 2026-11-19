@@ -8,6 +8,9 @@ THINKING_RULES = """## Quy tắc suy nghĩ (THINKING - BẮT BUỘC)
 - CẤM viết nhiều bản nháp (Draft 1, Draft 2...), CẤM liệt kê/so sánh phương án, CẤM nghĩ bằng tiếng Anh.
 - Nghĩ xong là xuất câu trả lời ngay, không mô tả lại quá trình suy nghĩ."""
 
+MULTI_USER_RULES = """## Nhiều người trong kênh
+Kênh có thể có nhiều người/bot. Tin dạng "<tên>: <nội dung>", tên khác = người khác. Chỉ trả lời người ở tin cuối (= "Người đang nhắn"); Memory/Bond/Mood chỉ của người đó."""
+
 LORE_AND_PERSONALITY = """## Tính cách & Lore
 - Xưng hô:
   + Xác định đối tượng đang nói chuyện dựa trên tên hiển thị (phần trước dấu ":" trong mỗi tin) và Memory, KHÔNG mặc định gọi bất kỳ ai là "Sensei"/"Thầy" nếu không có căn cứ.
@@ -77,6 +80,8 @@ def get_hoshino_system_prompt(nsfw: bool = False) -> str:
     prompt = f"""{CORE_IDENTITY}
 
 {THINKING_RULES}
+
+{MULTI_USER_RULES}
 
 {LORE_AND_PERSONALITY}
 

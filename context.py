@@ -38,6 +38,7 @@ def build_context_info(channel: discord.abc.Messageable, current_author, bot_str
         f"- Thời gian hiện tại: {now_str} (giờ Việt Nam, GMT+7)\n"
         f"- Server: {guild_name}\n"
         f"- Kênh: {channel_display}\n"
+        f"- Người đang nhắn: {current_author.display_name}\n"
         + (f"- Người gửi là bot: true\n- Số lượt liên tiếp toàn bot (không có người thật xen vào), TÍNH CẢ LƯỢT NÀY: {bot_streak}\n" if current_author.bot else "")
     )
 
@@ -115,8 +116,6 @@ async def build_messages_from_channel(
             role = "assistant"
             author_prefix = ""
         else:
-            if m.author.bot and (not current_author.bot or m.author.id != current_author.id):
-                continue
             role = "user"
             author_prefix = f"{m.author.display_name}: "
 
