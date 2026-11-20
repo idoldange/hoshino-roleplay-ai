@@ -76,10 +76,18 @@ async def main():
 
     if shutdown_state["restart"]:
         logger.info("Đang khởi động lại bot...")
-        os.execv(
-            sys.executable,
-            [sys.executable, os.path.abspath(__file__), *sys.argv[1:]],
-        )
+        argv = [sys.executable, os.path.abspath(__file__), *sys.argv[1:]]
+        if os.name == "nt":
+            import subprocess
+
+            flags = 0
+            for attr in ("DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
+                val = getattr(subprocess, attr, 0)
+                if val:
+                    flags |= val
+            subprocess.Popen(argv, creationflags=flags, close_fds=True)
+            sys.exit(0)
+        os.execv(sys.executable, argv)
 
 
 if __name__ == "__main__":

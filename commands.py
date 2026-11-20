@@ -438,7 +438,7 @@ async def handle_command(message: discord.Message, user_text: str) -> bool:
     )
 
     if lowered == "clear":
-        await message.channel.send(f"Uhe~, ok Sensei, em xoá trí nhớ tạm ở đây từ giờ trở đi nha!{config.CLEAR_MARKER}")
+        await message.channel.send(config.CLEAR_CONFIRM_TEXT)
         return True
 
     if lowered == "help":

@@ -24,6 +24,14 @@ def _consecutive_bot_streak(collected, current_author) -> int:
     return streak
 
 
+def _is_clear_command(content: str) -> bool:
+    text = content.strip()
+    prefix = config.BOT_PREFIX.lower()
+    if not text.lower().startswith(prefix):
+        return False
+    return text[len(prefix):].strip().lower() == "clear"
+
+
 def build_context_info(channel: discord.abc.Messageable, current_author, bot_streak: int = 0) -> str:
     now_str = datetime.now(config.GMT7).strftime("%H:%M ngày %d/%m/%Y")
 
@@ -64,9 +72,15 @@ async def build_messages_from_channel(
     allow_images: bool = True,
 ):
     collected = []
+    pending_clear_confirm = False
     async for m in channel.history(limit=config.HISTORY_SCAN_LIMIT):
-        if m.author.id == bot.user.id and config.CLEAR_MARKER in m.content:
-            break
+        if pending_clear_confirm:
+            pending_clear_confirm = False
+            if _is_clear_command(m.clean_content):
+                break
+        if m.author.id == bot.user.id and m.clean_content.strip() == config.CLEAR_CONFIRM_TEXT:
+            pending_clear_confirm = True
+            continue
         if m.id != message_id:
             collected.append(m)
         if len(collected) >= config.HISTORY_LIMIT:
@@ -111,8 +125,6 @@ async def build_messages_from_channel(
 
     for m in collected:
         if m.author.id == bot.user.id:
-            if config.CLEAR_MARKER in m.content:
-                continue
             role = "assistant"
             author_prefix = ""
         else:

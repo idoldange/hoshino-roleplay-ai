@@ -1,3 +1,4 @@
+import html
 import re
 
 from config import THOUGHT_TAG_PAIRS
@@ -89,6 +90,60 @@ def cut_partial_tag(text: str) -> str:
         if any(literal.startswith(tail) for literal in _LOWER_TAG_LITERALS):
             return text[:index]
     return text
+
+
+_HTML_HINT_RE = re.compile(r"<!doctype\s+html|<html[\s>]", re.IGNORECASE)
+_HTML_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+_HTML_DROP_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _truncate(text: str, limit: int) -> str:
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    cut = text.rfind(" ", 0, limit)
+    if cut < limit * 0.6:
+        cut = limit
+    return text[:cut].rstrip() + "…"
+
+
+def _html_to_text(raw: str) -> str:
+    """Đổi một trang HTML lỗi thành 1-2 câu dễ đọc thay vì đổ raw HTML."""
+    title = ""
+    title_match = _HTML_TITLE_RE.search(raw)
+    if title_match:
+        title = html.unescape(_HTML_TAG_RE.sub(" ", title_match.group(1)))
+        title = _WHITESPACE_RE.sub(" ", title).strip()
+
+    body = _HTML_TITLE_RE.sub(" ", raw)
+    body = _HTML_DROP_RE.sub(" ", body)
+    body = _HTML_TAG_RE.sub(" ", body)
+    body = html.unescape(body)
+    body = _WHITESPACE_RE.sub(" ", body).strip()
+
+    if title and body:
+        return f"{title} — {body}"
+    return title or body
+
+
+def summarize_error(error: Exception, limit: int = 280) -> str:
+    """Tóm tắt lỗi trước khi gửi Discord.
+
+    Nhiều lỗi từ API/endpoint thực chất là một trang HTML (502, 404, proxy...).
+    Gửi nguyên HTML vừa rác vừa dễ vượt giới hạn tin nhắn, nên ở đây rút nó
+    về tiêu đề + đoạn text ngắn; lỗi thường chỉ bị cắt bớt cho vừa.
+    """
+    raw = str(error).strip()
+    if not raw:
+        return type(error).__name__
+    if _HTML_HINT_RE.search(raw):
+        text = _html_to_text(raw)
+        if not text:
+            return "máy chủ trả về trang HTML thay vì dữ liệu (có thể đang sập/502)."
+        return _truncate(text, limit)
+    return _truncate(raw, limit)
 
 
 def split_message(text: str, limit: int = 1900) -> list[str]:

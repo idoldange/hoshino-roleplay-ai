@@ -8,7 +8,7 @@ import endpoint_profiles
 from attachments import process_attachments
 from client import bot, db
 from commands import handle_command
-from formatting import split_message
+from formatting import split_message, summarize_error
 from logger import logger
 from mc_console import print_fake_mc_done_log
 from memory_reflection import reflect_and_update_memory
@@ -87,7 +87,7 @@ async def _run_request(channel, request, state):
                 if (request.get("model_info") or {}).get("profile_id"):
                     reply = "...endpoint model đang lỗi, Sensei kiểm tra lại profile trong `!hoshino config` nha."
                 else:
-                    reply = f"...lỗi rồi, chắc server sập. ({e})"
+                    reply = f"...lỗi rồi, chắc server sập. ({summarize_error(e)})"
                 used_messages = None
                 mark_started()
                 for index, chunk in enumerate(split_message(reply, 1900)):

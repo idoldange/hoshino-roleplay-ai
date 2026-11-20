@@ -6,6 +6,27 @@ import config
 from logger import logger
 
 
+_IMAGE_MAGIC = (
+    b"\x89PNG\r\n\x1a\n",   # PNG
+    b"\xff\xd8\xff",        # JPEG
+    b"GIF87a",              # GIF
+    b"GIF89a",              # GIF
+    b"BM",                  # BMP
+)
+
+
+def _is_image_bytes(raw: bytes, filename: str) -> bool:
+    """Xác thực nội dung thực sự là ảnh qua magic bytes, tránh file được
+    đổi tên sang .png/.jpg mà không phải ảnh gây 'Unsupported Media Type'."""
+    if not raw:
+        return False
+    for magic in _IMAGE_MAGIC:
+        if raw.startswith(magic):
+            return True
+    if raw.startswith(b"RIFF") and len(raw) > 12 and raw[8:12] == b"WEBP":
+        return True
+    return False
+
 async def process_attachments(message_or_attachments, allow_images: bool = True):
     attachments = getattr(message_or_attachments, "attachments", message_or_attachments)
     extra_text_parts = []
@@ -36,6 +57,11 @@ async def process_attachments(message_or_attachments, allow_images: bool = True)
                 continue
             try:
                 raw = await att.read()
+                if not _is_image_bytes(raw, att.filename):
+                    extra_text_parts.append(
+                        f"[Tệp đính kèm '{att.filename}' không phải ảnh hợp lệ, đã bỏ qua]"
+                    )
+                    continue
                 mime = ctype if ctype.startswith("image/") else (mimetypes.guess_type(att.filename)[0] or "image/png")
                 b64 = base64.b64encode(raw).decode("ascii")
                 image_parts.append(

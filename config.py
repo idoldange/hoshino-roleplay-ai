@@ -106,7 +106,7 @@ MAX_TOOL_ITER = 4
 MAX_OUTPUT_TOKENS_DEFAULT = 2048
 MAX_OUTPUT_TOKENS_LIMIT = 16384
 
-CLEAR_MARKER = "\u200b\u200c[HOSHINO_RESET_MARK]\u200c\u200b"
+CLEAR_CONFIRM_TEXT = "Uhe~, ok Sensei, em xoá trí nhớ tạm ở đây từ giờ trở đi nha!"
 
 TEXT_EXTENSIONS = {
     ".txt", ".md", ".markdown", ".csv", ".log", ".json", ".yaml", ".yml",

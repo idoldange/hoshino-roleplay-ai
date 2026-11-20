@@ -85,6 +85,17 @@ class _ControlTagFilter:
         return _UNCLOSED_MOOD_RE.sub("", text)
 
 
+def _is_unsupported_media(error: Exception) -> bool:
+    """Lỗi API do backend không nhận loại nội dung (ví dụ ảnh), thường HTTP 415."""
+    status = getattr(error, "status_code", None) or getattr(error, "status", None)
+    if status is not None:
+        try:
+            return int(status) == 415
+        except (TypeError, ValueError):
+            pass
+    return "unsupported media type" in str(error).lower()
+
+
 def split_reasoning(raw_content: str, existing_reasoning: str | None = None):
     """Tách phần reasoning còn sót trong content (mọi kiểu thẻ trong
     config.THOUGHT_TAG_PAIRS) ra khỏi content, gộp với reasoning đã buffer
@@ -250,7 +261,9 @@ async def call_model(
         channel, user_text, author, image_parts=image_parts, message_id=message_id,
         enable_nsfw=nsfw, affection_context=affection_context, reply_context=reply_context,
         allow_images=allow_images,
-    ) 
+    )
+    has_images = bool(image_parts and allow_images)
+    retried_no_images = False
     # check perm coi dc gui tin nhan ko
     #channel la message.channel
     perm = (
@@ -371,7 +384,24 @@ async def call_model(
                                 line_buf += control_filter.feed(visible)
                                 line_buf, did_send = await _flush_lines(channel, line_buf, send_state)
                                 sent_any = sent_any or did_send
-            except Exception:
+            except Exception as exc:
+                if (
+                    not retried_no_images
+                    and has_images
+                    and _is_unsupported_media(exc)
+                ):
+                    retried_no_images = True
+                    logger.warning(
+                        "Backend không nhận ảnh, thử lại chỉ văn bản cho author=%s channel=%s",
+                        author.id, channel.id,
+                    )
+                    text_only = await build_messages_from_channel(
+                        channel, user_text, author, image_parts=None, message_id=message_id,
+                        enable_nsfw=nsfw, affection_context=affection_context,
+                        reply_context=reply_context, allow_images=False,
+                    )
+                    messages = text_only
+                    continue
                 if (model_info or {}).get("profile_id"):
                     logger.error("Lỗi khi đọc stream endpoint profile cho author=%s", author.id)
                 else:
