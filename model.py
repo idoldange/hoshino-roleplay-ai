@@ -6,7 +6,7 @@ import discord
 from openai import AsyncOpenAI
 
 import config
-from client import client_ai, db
+from client import bot, client_ai, db
 from context import build_messages_from_channel
 from formatting import cut_partial_tag, scan_thought, split_message
 from logger import logger
@@ -15,6 +15,28 @@ from affection import affection
 import endpoint_profiles
 
 IGNORE_REPLY = "<!-- ignore -->"
+
+
+def _speaker_prefix_re():
+    names = {"Takanashi Hoshino", "Hoshino Takanashi", "Hoshino", "Takanashi"}
+    user = getattr(bot, "user", None)
+    if user is not None:
+        for n in (getattr(user, "display_name", None), getattr(user, "name", None)):
+            if n:
+                names.add(n)
+    alt = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+    return re.compile(
+        rf"^[ \t]*[\[(]?[*_~`]{{0,3}}(?:{alt})[*_~`]{{0,3}}[\])]?[ \t]*[:\uff1a][ \t]*",
+        re.IGNORECASE | re.MULTILINE,
+    )
+
+
+def strip_speaker_prefix(text: str) -> str:
+    """Strip 'Hoshino: ' style prefix at the start of each line of model output
+    (model mimics the 'Name: text' format used for history/user messages)."""
+    if not text:
+        return text
+    return _speaker_prefix_re().sub("", text)
 _CONTROL_TAG_RE = re.compile(
     r"<mood>.*?</mood>"
     r"|<shocked>.*?</shocked>"
@@ -185,6 +207,7 @@ async def _flush_lines(channel, buf: str, send_state: dict) -> tuple[str, bool]:
     sent = False
     while "\n" in buf:
         line, buf = buf.split("\n", 1)
+        line = strip_speaker_prefix(line)
         if line.strip() and line.strip() != IGNORE_REPLY:
             for part in split_message(line, 1900):
                 if send_state["on_first_send"] is not None:
@@ -450,7 +473,7 @@ async def call_model(
                 elif exp_change < 0:
                     await affection.decrement_experience(author.id, abs(exp_change))
                     logger.info("[experience] Decremented for user=%s by %+g", author.id, abs(exp_change))
-                final_reply = affection.strip_experience_tags(final_reply).strip() or "..."
+                final_reply = strip_speaker_prefix(affection.strip_experience_tags(final_reply)).strip() or "..."
 
                 # Auto-retry nếu chỉ có control tags (kết quả chỉ là "...")
                 if final_reply == "..." and max_output_tokens < config.MAX_OUTPUT_TOKENS_LIMIT:
@@ -480,6 +503,7 @@ async def call_model(
                     line_buf += thought_filter.finish()
                     line_buf += control_filter.finish()
                     # Gửi nốt phần dư cuối (dòng không có \n kết thúc).
+                    line_buf = strip_speaker_prefix(line_buf)
                     if line_buf.strip() and line_buf.strip() != IGNORE_REPLY:
                         for part in split_message(line_buf, 1900):
                             if send_state["reply_message"] is not None:
@@ -515,6 +539,7 @@ async def call_model(
             if stream_reply:
                 line_buf += thought_filter.finish()
                 line_buf += control_filter.finish()
+                line_buf = strip_speaker_prefix(line_buf)
                 if line_buf.strip() and line_buf.strip() != IGNORE_REPLY:
                     for part in split_message(line_buf, 1900):
                         if send_state["on_first_send"] is not None:
@@ -545,7 +570,7 @@ async def call_model(
             messages.append(
                 {
                     "role": "assistant",
-                    "content": clean_content,
+                    "content": strip_speaker_prefix(clean_content),
                     **({"reasoning_content": reasoning} if reasoning else {}),
                     "tool_calls": [
                         {
