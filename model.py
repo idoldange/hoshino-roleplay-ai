@@ -547,6 +547,14 @@ async def call_model(
                     _footer = stats_footer.build(_stats)
                     if _footer and final_reply != IGNORE_REPLY:
                         final_reply = f"{final_reply}\n{_footer}"
+                        if sent_any:
+                            try:
+                                if reply_message is not None:
+                                    await reply_message.reply(_footer)
+                                else:
+                                    await channel.send(_footer)
+                            except Exception:
+                                logger.warning("Không gửi được footer stats", exc_info=True)
                     if not sent_any and final_reply != IGNORE_REPLY:
                         for part in split_message(final_reply, 1900):
                             if send_state["on_first_send"] is not None:
