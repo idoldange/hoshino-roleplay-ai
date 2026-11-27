@@ -238,7 +238,10 @@ class AffectionManager:
                 raw = bond_matches[-1].group("v").replace("—", "-").replace("–", "-").replace(" ", "")
                 try:
                     if _first_time(turn_id, "bond", raw, now):
-                        _bond.adjust(uid, float(raw))
+                        _delta = float(raw)
+                        if CUSTOM_GIFT_ACTIVE.get():
+                            _delta = clamp_custom_bond(_delta)
+                        _bond.adjust(uid, _delta)
                 except (ValueError, TypeError):
                     pass
             text = _BOND_TAG_RE.sub("", text)

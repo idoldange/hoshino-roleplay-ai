@@ -1,4 +1,5 @@
 """Qua tang cho Hoshino: catalog + dieu kien + cooldown + UI."""
+import contextvars
 import time
 from dataclasses import dataclass, field
 
@@ -94,6 +95,10 @@ def check(gift, bond, nsfw):
     return None
 
 
+def clamp_custom_bond(delta):
+    return max(-3.0, min(2.0, float(delta)))
+
+
 def sanitize_custom(text):
     text = (text or "").replace("<", "").replace(">", "")
     text = " ".join(text.split())
@@ -175,7 +180,7 @@ async def _apply(user_id, gift, scope):
         await affection.add_lust_level(user_id, gift.lust)
 
 
-async def _enqueue(message, text, nsfw):
+async def _enqueue(message, text, nsfw, custom=False):
     from events import _enqueue_request
     from affection import affection
     scope = _scope(message)
@@ -237,7 +242,7 @@ async def give_custom(message, text):
         "Bắt buộc kết thúc bằng <bond>N</bond> (N trong khoảng -3..+2) và <mood>...</mood>. "
         "Không dùng tag lust/arousal."
     )
-    await _enqueue(message, prompt, _is_nsfw(message))
+    await _enqueue(message, prompt, _is_nsfw(message), custom=True)
 
 
 class GiftSelect(discord.ui.Select):
