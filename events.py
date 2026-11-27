@@ -75,6 +75,7 @@ async def _run_request(channel, request, state):
                     allow_audio=model_info.get("audio", False),
                     allow_video=model_info.get("video", False),
                     model_info=model_info,
+                    forced_stats=request.get("forced_stats"),
                 )
             except asyncio.CancelledError:
                 raise

@@ -180,7 +180,7 @@ async def _apply(user_id, gift, scope):
         await affection.add_lust_level(user_id, gift.lust)
 
 
-async def _enqueue(message, text, nsfw, custom=False):
+async def _enqueue(message, text, nsfw, custom=False, forced=None):
     from events import _enqueue_request
     from affection import affection
     scope = _scope(message)
@@ -193,6 +193,8 @@ async def _enqueue(message, text, nsfw, custom=False):
         "nsfw": nsfw,
         "affection_context": ctx,
         "reply_context": None,
+        "custom_gift": custom,
+        "forced_stats": forced,
     })
 
 
@@ -218,7 +220,10 @@ async def give(message, gift):
         "Hãy phản ứng tự nhiên trong vai Hoshino. "
         "Hiệu ứng đã áp dụng sẵn, KHÔNG xuất tag <bond>/<mood>/<rel>/<lust>."
     )
-    await _enqueue(message, text, nsfw)
+    await _enqueue(message, text, nsfw, forced={
+        "bond": gift.bond, "mood": dict(gift.mood), "rel": dict(gift.rel),
+        "arousal": gift.arousal, "lust": gift.lust,
+    })
 
 
 async def give_custom(message, text):

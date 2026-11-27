@@ -4,6 +4,7 @@ import json
 import discord
 
 import config
+import stats_footer
 from attachments import process_attachments
 from client import bot, db
 from personalization import project_personalization_guide
@@ -130,7 +131,7 @@ async def build_messages_from_channel(
         attachment_text, attachment_images, attachment_audios, attachment_videos = await process_attachments(
             m, allow_images=allow_images, allow_audio=allow_audio, allow_video=allow_video
         )
-        text_content = m.clean_content.strip()
+        text_content = stats_footer.footer_to_tags(m.clean_content.strip())
         if attachment_text:
             text_content = f"{text_content}\n\n{attachment_text}".strip()
         if not text_content and not (attachment_images or attachment_audios or attachment_videos):

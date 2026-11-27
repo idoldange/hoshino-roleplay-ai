@@ -6,6 +6,7 @@ import discord
 from openai import AsyncOpenAI
 
 import config
+import stats_footer
 from client import bot, client_ai, db
 from context import build_messages_from_channel
 from formatting import cut_partial_tag, scan_thought, split_message
@@ -271,6 +272,7 @@ async def call_model(
     allow_audio: bool = False,
     allow_video: bool = False,
     model_info: dict | None = None,
+    forced_stats: dict | None = None,
 ):
     """
     stream_reply=False (mặc định): hành vi y hệt bản cũ — trả về (reply, messages)
@@ -457,19 +459,23 @@ async def call_model(
 
             if not tool_call_chunks:
                 # Không có tool call -> đây là câu trả lời cuối cùng của vòng lặp.
+                _stats = {}
                 final_reply = affection.parse_and_apply_mood_tag(
                     clean_content,
                     user_id=author.id,
                     scope={"is_dm": nsfw},
                     turn_id=message_id,
+                    stats_out=_stats,
                 ).strip() or "..."
 
                 # Arousal (transient) + Lust (persistent level)
                 lust_tags = affection.parse_lust_tags(final_reply)
                 if lust_tags["arousal"]:
                     await affection.add_arousal(author.id, lust_tags["arousal"])
+                    _stats["arousal"] = _stats.get("arousal", 0) + lust_tags["arousal"]
                     logger.info("[arousal] %+g for user=%s", lust_tags["arousal"], author.id)
                 if lust_tags["lust"]:
+                    _stats["lust"] = _stats.get("lust", 0) + lust_tags["lust"]
                     level = await affection.add_lust_level(author.id, lust_tags["lust"])
                     logger.info("[lust] level %+d for user=%s -> lv%d", lust_tags["lust"], author.id, level)
                 if lust_tags["climax"]:
@@ -486,6 +492,15 @@ async def call_model(
                     await affection.decrement_experience(author.id, abs(exp_change))
                     logger.info("[experience] Decremented for user=%s by %+g", author.id, abs(exp_change))
                 final_reply = strip_speaker_prefix(affection.strip_experience_tags(final_reply)).strip() or "..."
+
+                if forced_stats:
+                    for _key, _val in forced_stats.items():
+                        if isinstance(_val, dict):
+                            _bucket = _stats.setdefault(_key, {})
+                            for _k2, _v2 in _val.items():
+                                _bucket[_k2] = _bucket.get(_k2, 0) + _v2
+                        elif _val:
+                            _stats[_key] = _stats.get(_key, 0) + _val
 
                 # Auto-retry nếu chỉ có control tags (kết quả chỉ là "...")
                 if final_reply == "..." and max_output_tokens < config.MAX_OUTPUT_TOKENS_LIMIT:
@@ -529,6 +544,9 @@ async def call_model(
                     # Fallback: nếu suốt quá trình stream chưa gửi được gì (vd model chỉ
                     # trả <think> không đóng thẻ, hoặc nội dung rỗng) thì gửi nguyên câu
                     # trả lời cuối để Sensei không bị bỏ rơi.
+                    _footer = stats_footer.build(_stats)
+                    if _footer and final_reply != IGNORE_REPLY:
+                        final_reply = f"{final_reply}\n{_footer}"
                     if not sent_any and final_reply != IGNORE_REPLY:
                         for part in split_message(final_reply, 1900):
                             if send_state["on_first_send"] is not None:

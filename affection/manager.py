@@ -170,7 +170,7 @@ class AffectionManager:
         _mood.nudge(delta)
 
     def parse_and_apply_mood_tag(self, text: str, user_id: int | None = None, scope: dict | None = None,
-                                 turn_id=None) -> str:
+                                 turn_id=None, stats_out: dict | None = None) -> str:
         """
         Scan a model response for <mood>, <shocked> and <bond> tags, apply them, strip them, return the text.
 
@@ -181,6 +181,14 @@ class AffectionManager:
         """
         now = time.time()
         uid = int(user_id) if user_id is not None else None
+
+        def _rec(kind, values):
+            if stats_out is None or not values:
+                return
+            bucket = stats_out.setdefault(kind, {})
+            for key, val in values.items():
+                bucket[key] = bucket.get(key, 0) + val
+
         is_dm = bool(scope.get("is_dm")) if isinstance(scope, dict) else False
 
         # <shocked> first: when present it owns `surprise`, a surprise delta in <mood> of the same text is dropped.
@@ -200,6 +208,7 @@ class AffectionManager:
                     deltas.pop("surprise", None)
                 if deltas:
                     _mood.apply_emotions(deltas, reason, user_id=uid, is_dm=is_dm, now=now)
+                    _rec("mood", deltas)
                 if not re.search(r"</mood>\s*$", match.group(0), re.IGNORECASE):
                     from console import console
                     console.log(
@@ -242,6 +251,8 @@ class AffectionManager:
                         if CUSTOM_GIFT_ACTIVE.get():
                             _delta = clamp_custom_bond(_delta)
                         _bond.adjust(uid, _delta)
+                        if stats_out is not None:
+                            stats_out["bond"] = _delta
                 except (ValueError, TypeError):
                     pass
             text = _BOND_TAG_RE.sub("", text)
@@ -251,6 +262,8 @@ class AffectionManager:
             if uid is not None and _first_time(turn_id, "rel", match.group("body"), now):
                 try:
                     _relation.apply_tag(match.group("body"), uid, is_dm, now)
+                    _rel_deltas, _ = _relation.parse_tag_body(match.group("body"))
+                    _rec("rel", _rel_deltas)
                 except Exception as e:
                     from console import console
                     console.log(f"[rel] tag ignored: {e}", "WARN")
@@ -267,6 +280,7 @@ class AffectionManager:
                     deltas.pop("surprise", None)
                 if deltas and _first_time(turn_id, "mood", body, now):
                     _mood.apply_emotions(deltas, reason, user_id=uid, is_dm=is_dm, now=now)
+                    _rec("mood", deltas)
                 from console import console
                 console.log(
                     f"[mood] recovered bare mood body (emotions={list(deltas)}), stripped",
