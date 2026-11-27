@@ -240,7 +240,7 @@ async def give_custom(message, text):
         f'Sensei tặng bạn một món quà tự chọn: "{text}". '
         "Hãy đánh giá món quà và phản ứng trong vai Hoshino. "
         "Bắt buộc kết thúc bằng <bond>N</bond> (N trong khoảng -3..+2) và <mood>...</mood>. "
-        "Không dùng tag lust/arousal."
+        "Nếu ngữ cảnh NSFW/DM phù hợp, có thể dùng thêm tag lust/arousal."
     )
     await _enqueue(message, prompt, _is_nsfw(message), custom=True)
 
