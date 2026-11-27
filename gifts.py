@@ -173,7 +173,7 @@ async def _apply(user_id, gift, scope):
             tag, user_id=user_id, scope=scope, turn_id=f"gift:{time.time()}"
         )
     if gift.bond:
-        await bond_mod.adjust(user_id, gift.bond)
+        bond_mod.adjust(user_id, gift.bond)
     if gift.arousal:
         await affection.add_arousal(user_id, gift.arousal)
     if gift.lust:
@@ -258,7 +258,7 @@ class GiftSelect(discord.ui.Select):
         if interaction.user.id != self.owner.author.id:
             await interaction.response.send_message("Không phải quà của bạn nha.", ephemeral=True)
             return
-        await interaction.response.defer()
+        await interaction.response.edit_message(view=None)
         await give(self.owner, CATALOG[self.values[0]])
 
 
@@ -274,6 +274,10 @@ class CustomGiftModal(discord.ui.Modal, title="Quà tự chọn"):
             await interaction.response.send_message("Không phải quà của bạn nha.", ephemeral=True)
             return
         await interaction.response.defer()
+        try:
+            await interaction.message.edit(view=None)
+        except Exception:
+            pass
         await give_custom(self.owner, str(self.content))
 
 
