@@ -263,8 +263,13 @@ class GiftSelect(discord.ui.Select):
         if interaction.user.id != self.owner.author.id:
             await interaction.response.send_message("Không phải quà của bạn nha.", ephemeral=True)
             return
-        await interaction.response.edit_message(view=None)
-        await give(self.owner, CATALOG[self.values[0]])
+        gift = CATALOG[self.values[0]]
+        embed = discord.Embed(
+            title="Đã tặng quà",
+            description=f"**{self.owner.author.display_name}** đã tặng Hoshino **{gift.name}** — {gift.desc}",
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+        await give(self.owner, gift)
 
 
 class CustomGiftModal(discord.ui.Modal, title="Quà tự chọn"):
@@ -278,12 +283,17 @@ class CustomGiftModal(discord.ui.Modal, title="Quà tự chọn"):
         if interaction.user.id != self.owner.author.id:
             await interaction.response.send_message("Không phải quà của bạn nha.", ephemeral=True)
             return
+        text = sanitize_custom(str(self.content))
+        embed = discord.Embed(
+            title="Đã tặng quà",
+            description=f"**{self.owner.author.display_name}** đã tặng Hoshino: \"{text}\"",
+        )
         await interaction.response.defer()
         try:
-            await interaction.message.edit(view=None)
+            await interaction.message.edit(embed=embed, view=None)
         except Exception:
             pass
-        await give_custom(self.owner, str(self.content))
+        await give_custom(self.owner, text)
 
 
 class GiftView(discord.ui.View):
