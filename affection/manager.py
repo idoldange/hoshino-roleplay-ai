@@ -236,6 +236,8 @@ class AffectionManager:
 
         if shocked_reason and _first_time(turn_id, "shocked", shocked_reason, now):
             _mood.trigger_shocked(shocked_reason, user_id=uid, is_dm=is_dm)
+            if stats_out is not None:
+                stats_out["shocked"] = _mood.clean_reason(shocked_reason)
 
         # Legacy arousal signal is no longer a mood overlay; always strip it.
         text = _AROUSED_TAG_RE.sub("", text)
