@@ -157,7 +157,7 @@ class _ThoughtFilter:
         return self.feed(self._text)
 
 
-async def _safe_send(channel, content, reply_message=None, on_first_send=None):
+async def _safe_send(channel, content, reply_message=None, on_first_send=None, state=None):
     """Gửi message với retry logic khi gặp lỗi message_reference không hợp lệ.
     
     Args:
@@ -175,7 +175,9 @@ async def _safe_send(channel, content, reply_message=None, on_first_send=None):
     
     if reply_message is not None:
         try:
-            await reply_message.reply(content)
+            msg = await reply_message.reply(content)
+            if state is not None:
+                state["last_message"] = msg
             return True
         except discord.errors.HTTPException as e:
             if e.code == 50035:  # Invalid Form Body - Unknown message
@@ -185,7 +187,9 @@ async def _safe_send(channel, content, reply_message=None, on_first_send=None):
                 )
                 # Retry without message reference
                 try:
-                    await channel.send(content)
+                    msg = await channel.send(content)
+                    if state is not None:
+                        state["last_message"] = msg
                     # Reset reply_message sau khi retry thành công
                     return True
                 except Exception as e2:
@@ -196,7 +200,9 @@ async def _safe_send(channel, content, reply_message=None, on_first_send=None):
                 return False
     else:
         try:
-            await channel.send(content)
+            msg = await channel.send(content)
+            if state is not None:
+                state["last_message"] = msg
             return True
         except Exception as e:
             logger.error("Lỗi khi gửi tin nhắn thường: %s", e)
@@ -216,12 +222,12 @@ async def _flush_lines(channel, buf: str, send_state: dict) -> tuple[str, bool]:
                     send_state["on_first_send"]()
                     send_state["on_first_send"] = None
                 if send_state["reply_message"] is not None:
-                    if not await _safe_send(channel, part, send_state["reply_message"], send_state["on_first_send"]):
+                    if not await _safe_send(channel, part, send_state["reply_message"], send_state["on_first_send"], send_state):
                         send_state["reply_message"] = None
                     else:
                         send_state["reply_message"] = None  # Reset sau khi retry thành công
                 else:
-                    await channel.send(part)
+                    send_state["last_message"] = await channel.send(part)
             sent = True
     return buf, sent
 
@@ -378,7 +384,7 @@ async def call_model(
             tool_call_chunks: dict[int, dict] = {}
             line_buf = ""
             sent_any = False
-            send_state = {"reply_message": reply_message, "on_first_send": on_first_send}
+            send_state = {"reply_message": reply_message, "on_first_send": on_first_send, "last_message": None}
             control_filter = _ControlTagFilter()
             thought_filter = _ThoughtFilter()
 
@@ -534,12 +540,12 @@ async def call_model(
                     if line_buf.strip() and line_buf.strip() != IGNORE_REPLY:
                         for part in split_message(line_buf, 1900):
                             if send_state["reply_message"] is not None:
-                                if not await _safe_send(channel, part, send_state["reply_message"], send_state["on_first_send"]):
+                                if not await _safe_send(channel, part, send_state["reply_message"], send_state["on_first_send"], send_state):
                                     send_state["reply_message"] = None
                                 else:
                                     send_state["reply_message"] = None  # Reset sau khi retry thành công
                             else:
-                                await channel.send(part)
+                                send_state["last_message"] = await channel.send(part)
                         sent_any = True
                     # Fallback: nếu suốt quá trình stream chưa gửi được gì (vd model chỉ
                     # trả <think> không đóng thẻ, hoặc nội dung rỗng) thì gửi nguyên câu
@@ -549,8 +555,9 @@ async def call_model(
                         final_reply = f"{final_reply}\n{_footer}"
                         if sent_any:
                             try:
-                                if reply_message is not None:
-                                    await reply_message.reply(_footer)
+                                target = send_state.get("last_message")
+                                if target is not None:
+                                    await target.edit(content=f"{target.content}\n{_footer}")
                                 else:
                                     await channel.send(_footer)
                             except Exception:
