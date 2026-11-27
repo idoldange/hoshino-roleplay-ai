@@ -546,6 +546,13 @@ async def handle_command(message: discord.Message, user_text: str) -> bool:
         await message.channel.send("Uhe~ đã reset hưng phấn của Sensei rồi đó nha~")
         return True
 
+    if lowered == "speedrun":
+        new_state = await affection.toggle_speedrun(message.author.id)
+        await message.channel.send(
+            "Uhe~ Speedrun mode đã BẬT rồi đó nha~" if new_state else "Uhe~ Speedrun mode đã TẮT rồi đó nha~"
+        )
+        return True
+
     if lowered in ("affection", "mood", "bond"):
         is_dm = message.guild is None or bool(getattr(message.channel, "nsfw", False))
         d = affection.describe_mood(message.author.id, is_dm=is_dm)
@@ -579,6 +586,8 @@ async def handle_command(message: discord.Message, user_text: str) -> bool:
                 why_lines.append("- " + line)
             parts.append("☕ **Lý do:**\n" + "\n".join(why_lines))
         parts.append(f"💕 **Bond** — {bond_bar} {bond:.1f}/100\n- {bond_rank}")
+        if await affection.is_speedrun(message.author.id):
+            parts.append("⚡ **Speedrun mode: ON** — Bond tăng nhanh, Lust & arousal dễ lên hơn.")
         if vec:
             top = sorted(vec.items(), key=lambda kv: -kv[1])[:5]
             parts.append("📊 **Chi tiết:** " + " · ".join(

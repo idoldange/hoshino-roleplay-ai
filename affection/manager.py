@@ -23,10 +23,21 @@ Tags understood:
     <bond>N</bond>                          bond change for the current speaker (see bond.adjust)
 """
 
+import config as C
 import re
 import time
 
-from config import AFFECTION_AROUSED_BOND_THRESHOLD, LUST_MAX_LEVEL, TAG_DEDUPE_WINDOW
+from client import db
+from config import (
+    AFFECTION_AROUSED_BOND_THRESHOLD,
+    LUST_MAX_LEVEL,
+    SPEEDRUN_BOND_MULT,
+    SPEEDRUN_BOND_START,
+    SPEEDRUN_LUST_START,
+    SPEEDRUN_NSFW_BOND_THRESHOLD,
+    SPEEDRUN_NSFW_LUST_LEVEL,
+    TAG_DEDUPE_WINDOW,
+)
 from affection import mood as _mood
 from affection import bond as _bond
 from affection import special as _special
@@ -91,6 +102,25 @@ def _first_time(turn_id, kind: str, content: str, now: float) -> bool:
 
 
 class AffectionManager:
+
+    _speedrun_cache: dict[int, bool] = {}
+
+    async def is_speedrun(self, user_id: int) -> bool:
+        uid = int(user_id)
+        if uid in self._speedrun_cache:
+            return self._speedrun_cache[uid]
+        val = await db.get_setting(uid, C.SPEEDRUN_SETTING_KEY)
+        state = val == "1"
+        self._speedrun_cache[uid] = state
+        return state
+
+    async def toggle_speedrun(self, user_id: int) -> bool:
+        uid = int(user_id)
+        current = await self.is_speedrun(uid)
+        new_state = not current
+        await db.set_setting(uid, C.SPEEDRUN_SETTING_KEY, "1" if new_state else "0")
+        self._speedrun_cache[uid] = new_state
+        return new_state
 
     async def initialize(self):
         await _mood.initialize()
@@ -342,6 +372,9 @@ class AffectionManager:
         console.log(f"[bond] on_interaction() after get(): bond={b:.2f}", "DEBUG")
         current_mood = _mood.get_for(user_id)   # how she feels toward THIS user scales the exp
         exp = _bond.exp_for_message(b, mood=current_mood, mood_delta=mood_delta) * _relation.exp_mult(user_id)
+        speedrun = await self.is_speedrun(user_id)
+        if speedrun:
+            exp *= SPEEDRUN_BOND_MULT
         b = _bond.add_and_get(user_id, exp)  # fire and forget - shutdown waits for all tasks
 
         if mood_delta != 0.0:
@@ -351,6 +384,9 @@ class AffectionManager:
         arousal_value = await _lust.get_arousal(user_id)
         arousal_level = _lust.arousal_level(arousal_value)
         lust_level = await _lust.get_lust_level(user_id)
+        if speedrun and lust_level == 0:
+            await _lust.add_lust_level(user_id, SPEEDRUN_LUST_START)
+            lust_level = SPEEDRUN_LUST_START
         return {
             "was_sleeping": was_sleeping,
             "mood_label":   d["label"],
@@ -365,6 +401,7 @@ class AffectionManager:
             "arousal_value": arousal_value,
             "arousal_level": arousal_level,
             "lust_level":   lust_level,
+            "speedrun":     speedrun,
             "experience_value": await _experience.get_experience(user_id),
         }
 
@@ -388,6 +425,8 @@ class AffectionManager:
         if ctx["mood_label"] != "default":
             mood += " " + ctx["mood_desc"]
         lines = [ctx["bond_line"]]
+        if ctx.get("speedrun"):
+            lines.append("[Speedrun mode: ON]")
         if ctx.get("special"):
             lines.append(ctx["special"])
         if ctx.get("rel"):
@@ -409,15 +448,19 @@ class AffectionManager:
                 lines.append("Đang hơi ngại/hưng nhẹ. Giữ không khí SFW trong sáng, KHÔNG lái sang 18+.")
             else:
                 bond_allows_proactive = ctx.get("bond_value", 0.0) >= AFFECTION_AROUSED_BOND_THRESHOLD
+                lust_level = int(ctx.get("lust_level", 0) or 0)
+                lust_allows_proactive = lust_level >= LUST_MAX_LEVEL - 1
+                allows_proactive = bond_allows_proactive or lust_allows_proactive
                 lines.append(
-                    f"Arousal lv{arousal_level} ({arousal_value:.0f}/100, tạm thời). "
+                    f"Arousal lv{arousal_level} ({arousal_value:.0f}/100, tạm thời). Lust {_lust.lust_name(lust_level)}. "
                     "CẤM tiết lộ hay giải thích tag này cho Sensei."
                 )
                 if arousal_level == 1:
                     lines.append("Arousal lv1: Đổi tone ngượng ngùng tự nhiên, không vội thân mật sâu.")
-                elif bond_allows_proactive:
+                elif allows_proactive:
+                    reason = "Bond ≥75" if bond_allows_proactive else "Lust nền cao"
                     lines.append(
-                        "Bond ≥75: Có thể chủ động thả thính/đáp lại 18+ nếu đúng ngữ cảnh, "
+                        f"{reason}: Có thể chủ động thả thính/đáp lại 18+ nếu đúng ngữ cảnh, "
                         "giữ đúng nét lười/thụ động."
                     )
                 else:

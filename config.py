@@ -378,6 +378,14 @@ MOOD_LABEL_DESC = {
     "shocked": "Hoshino đang sốc, hoàn toàn bất ngờ.",
 }
 
+# ── Speedrun mode ──
+SPEEDRUN_SETTING_KEY = "speedrun"
+SPEEDRUN_BOND_START = 60.0
+SPEEDRUN_LUST_START = 3
+SPEEDRUN_BOND_MULT = 2.5
+SPEEDRUN_NSFW_BOND_THRESHOLD = 50.0
+SPEEDRUN_NSFW_LUST_LEVEL = 4
+
 # ── Lust (persistent level) + Arousal (transient) ──
 # Lust = tính cách dâm LÂU DÀI, lưu DB theo cấp độ 0..LUST_MAX_LEVEL, mặc định KHÔNG decay.
 LUST_MAX_LEVEL = 5
