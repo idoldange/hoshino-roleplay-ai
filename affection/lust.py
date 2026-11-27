@@ -1,154 +1,117 @@
 """
 affection/lust.py
 ~~~~~~~~~~~~~~~~~
+Mô hình 2 lớp giống game hentai:
 
-Lust management module. Handles lust bar storage, decay, and arousal state.
+  * Lust    - tính cách dâm LÂU DÀI, lưu DB theo CẤP ĐỘ 0..LUST_MAX_LEVEL.
+              Mặc định KHÔNG decay (LUST_DECAY_PER_DAY = 0), tăng rất chậm.
+  * Arousal - hưng phấn TỨC THỜI 0..100, decay theo half-life, reset khi climax.
 
-Lust range: 0-100
-- 0-49: Normal
-- 50-74: Mild arousal (level 1)
-- 75-100: Strong arousal (level 2)
-
-Lust decay: Lazy decay (calculated on fetch, 1% per minute)
-Lust cap: 100 (no increase beyond max)
+Tag model được hiểu:
+  <lust_change amount="+1"/>      đổi cấp lust (mỗi tag tối đa ±LUST_TAG_MAX, cap/ngày)
+  <arousal_change amount="+20"/>  cộng/trừ arousal (tối đa ±AROUSAL_TAG_MAX mỗi tag)
+  <climax/>                       reset arousal về 0 (legacy <lust/> cũng hiểu)
+  <aroused/>                      legacy, chỉ bị strip
 """
 
 import re
-from datetime import datetime, timezone
 
+import config as C
 from client import db
 from logger import logger
 
-_LUST_CHANGE_TAG_RE = re.compile(
+_AROUSAL_TAG_RE = re.compile(
+    r"<arousal_change\s+amount\s*=\s*['\"](?P<amount>[+-]?\d+(?:\.\d+)?)['\"]\s*/>",
+    re.IGNORECASE,
+)
+_LUST_TAG_RE = re.compile(
     r"<lust_change\s+amount\s*=\s*['\"](?P<amount>[+-]?\d+(?:\.\d+)?)['\"]\s*/>",
     re.IGNORECASE,
 )
-
-_LUST_RESET_TAG_RE = re.compile(r"<lust\s*/>", re.IGNORECASE)
+_CLIMAX_TAG_RE = re.compile(r"<climax\s*/>|<lust\s*/>", re.IGNORECASE)
+_AROUSED_TAG_RE = re.compile(r"<aroused\s*/>", re.IGNORECASE)
+_ANY_TAG_RE = re.compile(
+    r"<arousal_change\b[^>]*/\s*>|<lust_change\b[^>]*/\s*>|<climax\s*/>|<lust\s*/>|<aroused\s*/>",
+    re.IGNORECASE,
+)
 
 
 class LustManager:
-    """Manages lust bar for each user."""
-
-    def __init__(self):
-        pass
+    """Persistent lust level + transient arousal."""
 
     async def initialize(self):
-        """Initialize lust manager."""
         pass
 
     async def start(self):
-        """Start lust manager (no background tasks needed for lazy decay)."""
         pass
 
     async def shutdown(self):
-        """Shutdown lust manager."""
         pass
 
-    async def get_lust(self, user_id: int) -> float:
-        """
-        Get lust value with lazy decay calculation.
-        
-        Args:
-            user_id: Discord user ID
-            
-        Returns:
-            Lust value (0-100) after decay
-        """
-        return await db.get_lust(user_id)
+    # Arousal (transient)
 
-    async def increment_lust(self, user_id: int, amount: float):
-        """
-        Increment lust with clamping to 0-100.
-        
-        Args:
-            user_id: Discord user ID
-            amount: Amount to increment (positive)
-        """
-        await db.increment_lust(user_id, amount)
+    async def get_arousal(self, user_id: int) -> float:
+        return await db.get_arousal(user_id)
 
-    async def decrement_lust(self, user_id: int, amount: float):
-        """
-        Decrement lust with clamping to 0-100.
-        
-        Args:
-            user_id: Discord user ID
-            amount: Amount to decrement (positive)
-        """
-        await db.decrement_lust(user_id, amount)
+    async def add_arousal(self, user_id: int, amount: float) -> float:
+        return await db.add_arousal(user_id, amount)
 
-    async def reset_lust(self, user_id: int):
-        """
-        Reset lust to 0.
-        
-        Args:
-            user_id: Discord user ID
-        """
-        await db.reset_lust(user_id)
+    async def reset_arousal(self, user_id: int):
+        await db.reset_arousal(user_id)
 
-    def parse_lust_change_tag(self, text: str) -> tuple[float, bool]:
-        """
-        Parse <lust_change amount="X"/> tags from model response.
-        
-        Args:
-            text: Model response text
-            
-        Returns:
-            Tuple of (total_change, was_reset)
-        """
-        total_change = 0.0
-        was_reset = False
-        
-        for match in _LUST_CHANGE_TAG_RE.finditer(text):
+    def arousal_level(self, value: float) -> int:
+        if value >= float(C.AROUSAL_LEVEL2):
+            return 2
+        if value >= float(C.AROUSAL_LEVEL1):
+            return 1
+        return 0
+
+    async def get_arousal_level(self, user_id: int) -> int:
+        return self.arousal_level(await self.get_arousal(user_id))
+
+    # Lust (persistent level)
+
+    async def get_lust_level(self, user_id: int) -> int:
+        return await db.get_lust_level(user_id)
+
+    async def add_lust_level(self, user_id: int, delta: int) -> int:
+        return await db.add_lust_level(user_id, delta)
+
+    def lust_name(self, level: int) -> str:
+        level = max(0, min(int(C.LUST_MAX_LEVEL), int(level)))
+        return C.LUST_LEVEL_NAMES[level]
+
+    def lust_desc(self, level: int) -> str:
+        level = max(0, min(int(C.LUST_MAX_LEVEL), int(level)))
+        return C.LUST_LEVEL_DESC.get(level, "")
+
+    # Tag parsing
+
+    def parse_tags(self, text: str) -> dict:
+        """Return {'arousal': float, 'lust': int, 'climax': bool} from a model reply."""
+        arousal = 0.0
+        for match in _AROUSAL_TAG_RE.finditer(text):
             try:
                 amount = float(match.group("amount"))
-                total_change += amount
-                logger.debug("[lust] Parsed lust_change tag: %+g", amount)
             except (ValueError, AttributeError):
-                logger.warning("[lust] Failed to parse lust_change amount: %s", match.group("amount"))
-        
-        # Check for lust reset tag
-        if _LUST_RESET_TAG_RE.search(text):
-            was_reset = True
-            logger.debug("[lust] Parsed lust reset tag")
-        
-        return total_change, was_reset
+                logger.warning("[arousal] bad tag amount: %s", match.group("amount"))
+                continue
+            arousal += max(-float(C.AROUSAL_TAG_MAX), min(float(C.AROUSAL_TAG_MAX), amount))
+        arousal = max(-float(C.AROUSAL_TAG_MAX), min(float(C.AROUSAL_TAG_MAX), arousal))
 
-    def strip_control_tags(self, text: str) -> str:
-        """Remove lust control tags before model text is shown to users."""
-        return _LUST_CHANGE_TAG_RE.sub("", _LUST_RESET_TAG_RE.sub("", text))
+        lust = 0
+        for match in _LUST_TAG_RE.finditer(text):
+            try:
+                lust += int(round(float(match.group("amount"))))
+            except (ValueError, AttributeError):
+                logger.warning("[lust] bad tag amount: %s", match.group("amount"))
+        lust = max(-int(C.LUST_TAG_MAX), min(int(C.LUST_TAG_MAX), lust))
 
-    async def check_aroused_state(self, user_id: int) -> int:
-        """
-        Check aroused state based on lust value.
-        
-        Args:
-            user_id: Discord user ID
-            
-        Returns:
-            Aroused level: 0 (normal), 1 (mild), 2 (strong)
-        """
-        lust = await self.get_lust(user_id)
-        
-        if lust >= 75:
-            return 2
-        elif lust >= 50:
-            return 1
-        else:
-            return 0
+        return {"arousal": arousal, "lust": lust, "climax": bool(_CLIMAX_TAG_RE.search(text))}
 
-    async def get_aroused_emoji(self, user_id: int) -> str:
-        """
-        Get emoji for aroused state.
-        
-        Args:
-            user_id: Discord user ID
-            
-        Returns:
-            Emoji: 🔥 (if aroused), empty string otherwise
-        """
-        aroused_level = await self.check_aroused_state(user_id)
-        return "🔥" if aroused_level > 0 else ""
+    def strip_tags(self, text: str) -> str:
+        """Remove all lust/arousal control tags before showing the reply."""
+        return _ANY_TAG_RE.sub("", text)
 
 
 lust = LustManager()

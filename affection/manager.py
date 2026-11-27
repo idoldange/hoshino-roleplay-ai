@@ -26,7 +26,7 @@ Tags understood:
 import re
 import time
 
-from config import AFFECTION_AROUSED_BOND_THRESHOLD, TAG_DEDUPE_WINDOW
+from config import AFFECTION_AROUSED_BOND_THRESHOLD, LUST_MAX_LEVEL, TAG_DEDUPE_WINDOW
 from affection import mood as _mood
 from affection import bond as _bond
 from affection import special as _special
@@ -254,38 +254,38 @@ class AffectionManager:
     def get_rank(self, user_id: int) -> str:
         return _bond.rank_name(_bond.get(int(user_id)))
 
-    # Lust (async - DB with lazy decay)
+    # Arousal (transient) + Lust level (persistent)
 
-    async def get_lust(self, user_id: int) -> float:
-        """Get lust value with lazy decay calculation."""
-        return await _lust.get_lust(user_id)
+    async def get_arousal(self, user_id: int) -> float:
+        return await _lust.get_arousal(user_id)
 
-    async def increment_lust(self, user_id: int, amount: float):
-        """Increment lust with clamping to 0-100."""
-        await _lust.increment_lust(user_id, amount)
+    async def add_arousal(self, user_id: int, amount: float) -> float:
+        return await _lust.add_arousal(user_id, amount)
 
-    async def decrement_lust(self, user_id: int, amount: float):
-        """Decrement lust with clamping to 0-100."""
-        await _lust.decrement_lust(user_id, amount)
+    async def reset_arousal(self, user_id: int):
+        await _lust.reset_arousal(user_id)
 
-    async def reset_lust(self, user_id: int):
-        """Reset lust to 0."""
-        await _lust.reset_lust(user_id)
+    async def get_arousal_level(self, user_id: int) -> int:
+        return await _lust.get_arousal_level(user_id)
 
-    def parse_lust_change_tag(self, text: str) -> tuple[float, bool]:
-        """Parse `<lust_change amount="X"/>` and `<lust/>` tags. Returns (total_change, was_reset)."""
-        return _lust.parse_lust_change_tag(text)
+    async def get_lust_level(self, user_id: int) -> int:
+        return await _lust.get_lust_level(user_id)
+
+    async def add_lust_level(self, user_id: int, delta: int) -> int:
+        return await _lust.add_lust_level(user_id, delta)
+
+    def get_lust_label(self, level: int) -> str:
+        return _lust.lust_name(level)
+
+    def get_lust_desc(self, level: int) -> str:
+        return _lust.lust_desc(level)
+
+    def parse_lust_tags(self, text: str) -> dict:
+        """Parse `<lust_change>`, `<arousal_change>`, `<climax/>` (and legacy `<lust/>`)."""
+        return _lust.parse_tags(text)
 
     def strip_lust_tags(self, text: str) -> str:
-        return _lust.strip_control_tags(text)
-
-    async def check_aroused_state(self, user_id: int) -> int:
-        """Aroused level from lust: 0 (normal), 1 (mild), 2 (strong)."""
-        return await _lust.check_aroused_state(user_id)
-
-    async def get_aroused_emoji(self, user_id: int) -> str:
-        """Emoji for the current aroused state."""
-        return await _lust.get_aroused_emoji(user_id)
+        return _lust.strip_tags(text)
 
     # Experience (async - DB)
 
@@ -348,8 +348,9 @@ class AffectionManager:
             _mood.nudge(mood_delta)
 
         d = _mood.describe(user_id, is_dm)
-        lust_value = await _lust.get_lust(user_id)
-        aroused_level = await _lust.check_aroused_state(user_id)
+        arousal_value = await _lust.get_arousal(user_id)
+        arousal_level = _lust.arousal_level(arousal_value)
+        lust_level = await _lust.get_lust_level(user_id)
         return {
             "was_sleeping": was_sleeping,
             "mood_label":   d["label"],
@@ -361,8 +362,9 @@ class AffectionManager:
             "bond_value":   b,
             "special":      _special.prompt_line(user_id),
             "rel":          _relation.prompt_line(user_id, is_dm),
-            "lust_value":   lust_value,
-            "aroused_level": aroused_level,
+            "arousal_value": arousal_value,
+            "arousal_level": arousal_level,
+            "lust_level":   lust_level,
             "experience_value": await _experience.get_experience(user_id),
         }
 
@@ -394,17 +396,25 @@ class AffectionManager:
         if ctx.get("mood_why"):
             lines.append("Why: " + "; ".join(ctx["mood_why"]))
 
-        aroused_level = int(ctx.get("aroused_level", 0) or 0)
-        if aroused_level:
+        lust_level = int(ctx.get("lust_level", 0) or 0)
+        lines.append(
+            f"Lust nền: {_lust.lust_name(lust_level)} (lv{lust_level}/{LUST_MAX_LEVEL}) - "
+            f"{_lust.lust_desc(lust_level)}."
+        )
+
+        arousal_level = int(ctx.get("arousal_level", 0) or 0)
+        if arousal_level:
+            arousal_value = float(ctx.get("arousal_value", 0.0) or 0.0)
             if not nsfw:
-                lines.append("Đang có cảm xúc ngại nhẹ. Giữ không khí SFW trong sáng, KHÔNG lái sang 18+.")
+                lines.append("Đang hơi ngại/hưng nhẹ. Giữ không khí SFW trong sáng, KHÔNG lái sang 18+.")
             else:
                 bond_allows_proactive = ctx.get("bond_value", 0.0) >= AFFECTION_AROUSED_BOND_THRESHOLD
                 lines.append(
-                    f"Trạng thái Aroused lv{aroused_level} (nội bộ). CẤM tiết lộ hay giải thích tag này cho Sensei."
+                    f"Arousal lv{arousal_level} ({arousal_value:.0f}/100, tạm thời). "
+                    "CẤM tiết lộ hay giải thích tag này cho Sensei."
                 )
-                if aroused_level == 1:
-                    lines.append("Aroused lv1: Đổi tone ngượng ngùng tự nhiên, không vội thân mật sâu.")
+                if arousal_level == 1:
+                    lines.append("Arousal lv1: Đổi tone ngượng ngùng tự nhiên, không vội thân mật sâu.")
                 elif bond_allows_proactive:
                     lines.append(
                         "Bond ≥75: Có thể chủ động thả thính/đáp lại 18+ nếu đúng ngữ cảnh, "
@@ -414,7 +424,10 @@ class AffectionManager:
                     lines.append("Bond <75: Chỉ đáp lại khi Sensei chủ động tiến tới trước, CẤM gạ gẫm trước.")
 
         if nsfw:
-            lines.append("Nếu tình huống làm Hoshino hứng thú rõ rệt, hãy xuất tag ẩn `<aroused/>`.")
+            lines.append(
+                "Hứng rõ thì xuất tag ẩn `<arousal_change amount=\"+X\"/>` (X ≤ 40); "
+                "lên đỉnh thì `<climax/>`; tính cách dâm đổi thật thì `<lust_change amount=\"+1\"/>`."
+            )
         if ctx["was_sleeping"]:
             lines.append("Just woke up: slightly drowsy, mention at most once.")
 

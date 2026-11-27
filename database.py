@@ -1,7 +1,11 @@
 import asyncio
+import math
+import time
 from datetime import datetime, timezone
 
 import aiosqlite
+
+import config as C
 
 
 class Database:
@@ -126,6 +130,18 @@ class Database:
                     updated_at TEXT
                 )"""
             )
+            # Migration: tách Lust (cấp độ lâu dài) khỏi Arousal (hưng phấn tạm thời).
+            async with db.execute("PRAGMA table_info(user_lust)") as _cur:
+                _lust_cols = {_r[1] for _r in await _cur.fetchall()}
+            for _col, _ddl in (
+                ("arousal", "ALTER TABLE user_lust ADD COLUMN arousal REAL NOT NULL DEFAULT 0.0"),
+                ("arousal_at", "ALTER TABLE user_lust ADD COLUMN arousal_at REAL"),
+                ("lust_level", "ALTER TABLE user_lust ADD COLUMN lust_level INTEGER NOT NULL DEFAULT 0"),
+                ("lust_day", "ALTER TABLE user_lust ADD COLUMN lust_day TEXT"),
+                ("lust_gained", "ALTER TABLE user_lust ADD COLUMN lust_gained INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if _col not in _lust_cols:
+                    await db.execute(_ddl)
             await db.execute(
                 """CREATE TABLE IF NOT EXISTS user_experience (
                     user_id INTEGER PRIMARY KEY,
@@ -549,75 +565,115 @@ class Database:
             await db.execute("DELETE FROM global_history WHERE user_id = ?", (user_id,))
             await db.commit()
 
-    # Lust table
-    async def get_lust(self, user_id: int) -> float:
-        """Get lust value with lazy decay calculation."""
+    # Lust (persistent level) + Arousal (transient)
+    async def get_arousal(self, user_id: int) -> float:
+        """Arousal 0..100 with lazy exponential decay (half-life from config)."""
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                "SELECT lust_value, updated_at FROM user_lust WHERE user_id = ?", (user_id,)
+                "SELECT arousal, arousal_at FROM user_lust WHERE user_id = ?", (user_id,)
             ) as cur:
                 row = await cur.fetchone()
-                if not row:
-                    return 0.0
-                
-                lust_value = float(row["lust_value"])
-                updated_at = row["updated_at"]
-                
-                # Calculate decay: 1% per minute
-                if updated_at:
-                    try:
-                        from datetime import datetime, timezone, timedelta
-                        last_update = datetime.fromisoformat(updated_at)
-                        now = datetime.now(timezone.utc)
-                        minutes_passed = (now - last_update).total_seconds() / 60
-                        
-                        decay_amount = minutes_passed * 1.0  # 1% per minute
-                        lust_value = max(0.0, lust_value - decay_amount)
-                    except Exception:
-                        pass
-                
-                return lust_value
+        if not row:
+            return 0.0
+        value = float(row["arousal"] or 0.0)
+        at = row["arousal_at"]
+        if value > 0 and at:
+            dt = max(0.0, time.time() - float(at))
+            value *= math.pow(0.5, dt / float(C.AROUSAL_HALFLIFE))
+        return max(0.0, min(float(C.AROUSAL_MAX), value))
 
-    async def set_lust(self, user_id: int, lust_value: float):
-        """Set lust value directly."""
-        now = datetime.now(timezone.utc).isoformat()
+    async def set_arousal(self, user_id: int, value: float):
+        """Set arousal directly (writes the decay clock)."""
+        value = max(0.0, min(float(C.AROUSAL_MAX), float(value)))
+        now = time.time()
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
-                """INSERT INTO user_lust (user_id, lust_value, updated_at) VALUES (?, ?, ?)
-                   ON CONFLICT(user_id) DO UPDATE SET lust_value=excluded.lust_value, updated_at=excluded.updated_at""",
-                (user_id, max(0.0, min(100.0, lust_value)), now),
+                """INSERT INTO user_lust (user_id, arousal, arousal_at, updated_at) VALUES (?, ?, ?, ?)
+                   ON CONFLICT(user_id) DO UPDATE SET arousal=excluded.arousal,
+                       arousal_at=excluded.arousal_at, updated_at=excluded.updated_at""",
+                (user_id, value, now, datetime.now(timezone.utc).isoformat()),
             )
             await db.commit()
 
-    async def increment_lust(self, user_id: int, amount: float):
-        """Increment lust with clamping to 0-100."""
-        current = await self.get_lust(user_id)
-        new_value = min(100.0, max(0.0, current + amount))
-        await self.set_lust(user_id, new_value)
+    async def add_arousal(self, user_id: int, amount: float) -> float:
+        """Add to the decayed arousal and clamp to 0..100. Returns the new value."""
+        value = max(0.0, min(float(C.AROUSAL_MAX), await self.get_arousal(user_id) + float(amount)))
+        await self.set_arousal(user_id, value)
+        return value
 
-    async def decrement_lust(self, user_id: int, amount: float):
-        """Decrement lust with clamping to 0-100."""
-        current = await self.get_lust(user_id)
-        new_value = max(0.0, current - amount)
-        await self.set_lust(user_id, new_value)
+    async def reset_arousal(self, user_id: int):
+        """Reset transient arousal to 0 (climax)."""
+        await self.set_arousal(user_id, 0.0)
 
-    async def reset_lust(self, user_id: int):
-        """Reset lust to 0."""
-        await self.set_lust(user_id, 0.0)
-
-    async def get_last_lust(self, user_id: int) -> float:
-        """Get last known lust value without decay calculation."""
+    async def get_lust_level(self, user_id: int) -> int:
+        """Persistent lust level 0..LUST_MAX_LEVEL (optional very slow decay)."""
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                "SELECT lust_value FROM user_lust WHERE user_id = ?", (user_id,)
+                "SELECT lust_level, updated_at FROM user_lust WHERE user_id = ?", (user_id,)
             ) as cur:
                 row = await cur.fetchone()
-                return float(row["lust_value"]) if row else 0.0
+        if not row:
+            return 0
+        level = int(row["lust_level"] or 0)
+        rate = float(C.LUST_DECAY_PER_DAY)
+        at = row["updated_at"]
+        if rate > 0 and level > 0 and at:
+            try:
+                days = max(0.0, (datetime.now(timezone.utc) - datetime.fromisoformat(at)).total_seconds() / 86400.0)
+                level -= int(days * rate)
+            except Exception:
+                pass
+        return max(0, min(int(C.LUST_MAX_LEVEL), level))
+
+    async def set_lust_level(self, user_id: int, level: int):
+        """Set the persistent lust level directly."""
+        level = max(0, min(int(C.LUST_MAX_LEVEL), int(level)))
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """INSERT INTO user_lust (user_id, lust_level, updated_at) VALUES (?, ?, ?)
+                   ON CONFLICT(user_id) DO UPDATE SET lust_level=excluded.lust_level, updated_at=excluded.updated_at""",
+                (user_id, level, datetime.now(timezone.utc).isoformat()),
+            )
+            await db.commit()
+
+    async def add_lust_level(self, user_id: int, delta: int) -> int:
+        """Change the persistent level (per-tag and per-day clamps). Returns the new level."""
+        delta = max(-int(C.LUST_TAG_MAX), min(int(C.LUST_TAG_MAX), int(delta)))
+        if delta == 0:
+            return await self.get_lust_level(user_id)
+        day = datetime.now(timezone.utc).date().isoformat()
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT lust_level, lust_day, lust_gained FROM user_lust WHERE user_id = ?", (user_id,)
+            ) as cur:
+                row = await cur.fetchone()
+            current = int(row["lust_level"] or 0) if row else 0
+            gained = int(row["lust_gained"] or 0) if row and row["lust_day"] == day else 0
+            if delta > 0:
+                room = int(C.LUST_DAILY_CAP) - gained
+                if room <= 0:
+                    return current
+                delta = min(delta, room)
+            new_level = max(0, min(int(C.LUST_MAX_LEVEL), current + delta))
+            applied = new_level - current
+            if delta > 0 and applied > 0:
+                gained += applied
+            await db.execute(
+                """INSERT INTO user_lust (user_id, lust_level, lust_day, lust_gained, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id) DO UPDATE SET lust_level=excluded.lust_level,
+                       lust_day=excluded.lust_day, lust_gained=excluded.lust_gained,
+                       updated_at=excluded.updated_at""",
+                (user_id, new_level, day, gained, datetime.now(timezone.utc).isoformat()),
+            )
+            await db.commit()
+        return new_level
 
     async def clear_lust(self, user_id: int):
-        """Clear lust for a user."""
+        """Clear all lust/arousal data for a user."""
         async with aiosqlite.connect(self.path) as db:
             await db.execute("DELETE FROM user_lust WHERE user_id = ?", (user_id,))
             await db.commit()

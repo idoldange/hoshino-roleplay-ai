@@ -15,7 +15,7 @@ import config
 from client import db
 
 SETTING_KEY = "custom_endpoint_profiles"
-_MULTIMODAL_PATTERNS = (
+_IMAGE_PATTERNS = (
     r"vision",
     r"\bvl\b",
     r"llava",
@@ -33,6 +33,18 @@ _MULTIMODAL_PATTERNS = (
     r"molmo",
     r"phi-4-multimodal",
 )
+_AUDIO_PATTERNS = (
+    r"audio",
+    r"omni",
+    r"realtime",
+    r"speech",
+    r"qwen-audio",
+)
+_VIDEO_PATTERNS = (
+    r"video",
+    r"omni",
+)
+_CAPABILITY_KEYS = ("image", "audio", "video")
 _user_locks: dict[int, asyncio.Lock] = {}
 
 
@@ -75,6 +87,12 @@ async def _read_profiles(user_id: int) -> list[dict]:
         ) from exc
     if not isinstance(profiles, list):
         raise ProfileStoreError("Dữ liệu profile trong DB không hợp lệ.")
+    for profile in profiles:
+        if isinstance(profile, dict):
+            profile["overrides"] = {
+                model_id: normalize_override(value)
+                for model_id, value in (profile.get("overrides") or {}).items()
+            }
     return profiles
 
 
@@ -107,29 +125,94 @@ async def get_profile(user_id: int, profile_id: str) -> dict:
     return profile
 
 
+def detect_capabilities(model_id: str) -> dict[str, bool]:
+    """Đoán khả năng đa phương tiện của model từ ID (image/audio/video)."""
+    lowered = (model_id or "").lower().replace("_", "-")
+    return {
+        "image": any(re.search(pattern, lowered) for pattern in _IMAGE_PATTERNS),
+        "audio": any(re.search(pattern, lowered) for pattern in _AUDIO_PATTERNS),
+        "video": any(re.search(pattern, lowered) for pattern in _VIDEO_PATTERNS),
+    }
+
+
 def detect_multimodal(model_id: str) -> bool:
-    lowered = model_id.lower().replace("_", "-")
-    return any(re.search(pattern, lowered) for pattern in _MULTIMODAL_PATTERNS)
+    """Tương thích cũ: chỉ trả khả năng xem ảnh."""
+    return detect_capabilities(model_id)["image"]
 
 
-def parse_overrides(raw: str) -> dict[str, bool | None]:
-    overrides = {}
-    for item in re.split(r"[\n,]+", raw or ""):
+def normalize_override(value) -> dict[str, bool]:
+    """Chuẩn hóa override cũ (bool = ảnh) hoặc mới (dict modality->bool)."""
+    if isinstance(value, bool):
+        return {"image": value}
+    if isinstance(value, dict):
+        return {
+            key: bool(value[key])
+            for key in _CAPABILITY_KEYS
+            if isinstance(value.get(key), bool)
+        }
+    return {}
+
+
+def capability_label(caps: dict) -> str:
+    """Nhãn hiển thị ngắn cho khả năng của model."""
+    parts = []
+    if caps.get("image", caps.get("multimodal", True)):
+        parts.append("ảnh")
+    if caps.get("audio"):
+        parts.append("audio")
+    if caps.get("video"):
+        parts.append("video")
+    return "Nhận " + " + ".join(parts) if parts else "Chỉ text"
+
+
+def parse_overrides(raw: str) -> dict[str, dict[str, bool | None]]:
+    """Parse override theo từng modality.
+
+    Cú pháp mỗi dòng:
+      model-id=true|false|auto                 (áp cho ảnh, tương thích cũ)
+      model-id=image:true,audio:true,video:false
+    Giá trị `auto`/`None` = bỏ override, quay về tự đoán theo model ID.
+    """
+    overrides: dict[str, dict[str, bool | None]] = {}
+    for item in re.split(r"[\n]+", raw or ""):
         item = item.strip()
         if not item:
             continue
-        model_id, separator, value = item.rpartition("=")
-        normalized = value.strip().lower()
-        if not separator or normalized not in {"true", "false", "auto"}:
-            raise ProfileStoreError(
-                "Override cần theo dạng `model-id=true`, `model-id=false` hoặc `model-id=auto`, mỗi model một dòng."
-            )
+        model_id, separator, value = item.partition("=")
         model_id = model_id.strip()
-        if not model_id:
-            raise ProfileStoreError("Override multimodal đang thiếu model ID.")
-        overrides[model_id] = (
-            None if normalized == "auto" else normalized == "true"
-        )
+        if not separator or not model_id:
+            raise ProfileStoreError(
+                "Override cần theo dạng `model-id=true/false/auto` "
+                "hoặc `model-id=image:true,audio:true,video:false`, mỗi model một dòng."
+            )
+
+        caps: dict[str, bool | None] = {}
+        for token in re.split(r"[,\s]+", value.strip()):
+            if not token:
+                continue
+            modality = "image"
+            normalized = token.strip().lower()
+            if ":" in token:
+                modality, _, normalized = token.partition(":")
+                modality = modality.strip().lower()
+                normalized = normalized.strip().lower()
+                if modality == "vision":
+                    modality = "image"
+                if modality not in _CAPABILITY_KEYS:
+                    raise ProfileStoreError(
+                        f"Modality '{modality}' không hợp lệ (chỉ image/audio/video)."
+                    )
+            if normalized == "auto":
+                caps[modality] = None
+            elif normalized in {"true", "1", "yes", "on"}:
+                caps[modality] = True
+            elif normalized in {"false", "0", "no", "off"}:
+                caps[modality] = False
+            else:
+                raise ProfileStoreError(
+                    f"Giá trị override '{normalized}' không hợp lệ (dùng true/false/auto)."
+                )
+        overrides[model_id] = caps
     return overrides
 
 
@@ -231,8 +314,24 @@ async def _save_profile(
         raise ProfileStoreError("Cần nhập ít nhất một API key.")
 
     model_ids, key_index = await _discover_models(base_url, api_keys, key_index)
-    existing_overrides = dict(old_profile.get("overrides") or {}) if old_profile else {}
-    existing_overrides.update(overrides)
+    existing_overrides = {
+        model_id: dict(caps)
+        for model_id, caps in (old_profile.get("overrides") or {}).items()
+    } if old_profile else {}
+    for model_id, caps in overrides.items():
+        current = existing_overrides.setdefault(model_id, {})
+        for modality, enabled in caps.items():
+            if enabled is None:
+                current.pop(modality, None)
+            else:
+                current[modality] = enabled
+        if not current:
+            existing_overrides.pop(model_id, None)
+    cleaned_overrides = {
+        model_id: caps
+        for model_id, caps in existing_overrides.items()
+        if model_id in model_ids and caps
+    }
     updated = {
         "id": profile_id or uuid.uuid4().hex,
         "name": name,
@@ -240,11 +339,7 @@ async def _save_profile(
         "api_keys": api_keys,
         "key_index": key_index,
         "models": model_ids,
-        "overrides": {
-            model_id: multimodal
-            for model_id, multimodal in existing_overrides.items()
-            if model_id in model_ids and multimodal is not None
-        },
+        "overrides": cleaned_overrides,
     }
 
     if old_profile:

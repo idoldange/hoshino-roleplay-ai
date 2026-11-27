@@ -24,13 +24,16 @@ async def available_models(user_id: int) -> dict[str, dict]:
             while name in choices:
                 name = f"{name[:90]} [{hashlib.sha1(name.encode('utf-8')).hexdigest()[:8]}]"
 
-            multimodal = overrides.get(model_id)
-            if multimodal is None:
-                multimodal = endpoint_profiles.detect_multimodal(model_id)
-            capability = "Nhận ảnh" if multimodal else "Chỉ text"
+            caps = endpoint_profiles.detect_capabilities(model_id)
+            caps.update(endpoint_profiles.normalize_override(overrides.get(model_id)))
+            capability = endpoint_profiles.capability_label(caps)
             choices[name] = {
                 "id": model_id,
-                "multimodal": multimodal,
+                "multimodal": caps["image"],
+                "image": caps["image"],
+                "audio": caps["audio"],
+                "video": caps["video"],
+                "tool": caps.get("tool", True),
                 "description": f"[{profile['name']}] {capability} · sửa: !hoshino config"[:100],
                 "profile_id": profile["id"],
                 "base_url": profile["base_url"],
@@ -56,7 +59,15 @@ def _default_info() -> dict:
         if info.get("id") == config.MODEL_NAME:
             return _named(name, info)
     # MODEL_NAME mặc định có thể không nằm trong MODEL_LIST; giữ hành vi cũ là nhận ảnh.
-    return _named(None, {"id": config.MODEL_NAME, "multimodal": True, "description": ""})
+    return _named(None, {
+        "id": config.MODEL_NAME,
+        "multimodal": True,
+        "image": True,
+        "audio": False,
+        "video": False,
+        "tool": True,
+        "description": "",
+    })
 
 
 def invalidate_user_cache(user_id: int) -> None:

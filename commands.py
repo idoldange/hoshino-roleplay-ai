@@ -114,9 +114,7 @@ class ModelSelectView(discord.ui.View):
             discord.SelectOption(
                 label=name[:100],
                 value=name,
-                description=(info.get("description") or (
-                    "Nhận ảnh" if info.get("multimodal", True) else "Chỉ text"
-                ))[:100],
+                description=(info.get("description") or endpoint_profiles.capability_label(info))[:100],
                 default=name == self.current_model_name,
             )
             for name, info in entries
@@ -180,6 +178,14 @@ class ModelSelectView(discord.ui.View):
         )
 
 
+def _format_override_line(model_id: str, caps: dict) -> str:
+    parts = [
+        f"{modality}:{'true' if enabled else 'false'}"
+        for modality, enabled in caps.items()
+    ]
+    return f"{model_id}={','.join(parts)}"
+
+
 def _config_embed(profiles: list[dict], encryption_ready: bool) -> discord.Embed:
     embed = discord.Embed(
         title="Cấu hình endpoint riêng",
@@ -206,8 +212,11 @@ def _config_embed(profiles: list[dict], encryption_ready: bool) -> discord.Embed
             inline=False,
         )
     embed.add_field(
-        name="Multimodal",
-        value="Tự đoán theo model ID; trong modal có thể đặt `model-id=true`, `false` hoặc `auto`.",
+        name="Khả năng media",
+        value=(
+            "Tự đoán ảnh/audio/video theo model ID. Trong modal có thể đặt "
+            "`model-id=image:true,audio:true,video:false` (hoặc `true/false/auto` cho ảnh)."
+        ),
         inline=False,
     )
     embed.set_footer(text="Model sẽ tự dò từ endpoint; model riêng hiện trong !hoshino model.")
@@ -241,12 +250,13 @@ class EndpointProfileModal(discord.ui.Modal, title="Cấu hình endpoint profile
         )
         overrides = profile.get("overrides", {}) if profile else {}
         override_text = "\n".join(
-            f"{model_id}={'true' if enabled else 'false'}"
-            for model_id, enabled in overrides.items()
+            _format_override_line(model_id, caps)
+            for model_id, caps in overrides.items()
+            if caps
         )
         self.overrides_input = discord.ui.TextInput(
-            label="Override multimodal (không bắt buộc)",
-            placeholder="Mỗi dòng: model-id=true/false/auto",
+            label="Override media (ảnh/audio/video)",
+            placeholder="Mỗi dòng: model-id=image:true,audio:true,video:false",
             default=override_text[:4000] if override_text else None,
             required=False,
             style=discord.TextStyle.paragraph,
@@ -522,8 +532,7 @@ async def handle_command(message: discord.Message, user_text: str) -> bool:
         current_name = current_info.get("name") or model_settings.name_for(current_info.get("id"))
         if current_name:
             current_line = f"Model hiện tại của bạn: **{current_name}**"
-            if not current_info.get("multimodal", True):
-                current_line += " (không xem được ảnh)"
+            current_line += f" ({endpoint_profiles.capability_label(current_info)})"
         else:
             current_line = "Model hiện tại của bạn: không có trong MODEL_LIST"
         view = ModelSelectView(models, message.author.id, current_name)
@@ -533,8 +542,8 @@ async def handle_command(message: discord.Message, user_text: str) -> bool:
         return True
 
     if lowered == "lust reset":
-        await affection.reset_lust(message.author.id)
-        await message.channel.send("Uhe~ đã reset lust của Sensei rồi đó nha~")
+        await affection.reset_arousal(message.author.id)
+        await message.channel.send("Uhe~ đã reset hưng phấn của Sensei rồi đó nha~")
         return True
 
     if lowered in ("affection", "mood", "bond"):
@@ -542,10 +551,12 @@ async def handle_command(message: discord.Message, user_text: str) -> bool:
         d = affection.describe_mood(message.author.id, is_dm=is_dm)
         bond = affection.get_bond(message.author.id)
         bond_rank = affection.get_rank(message.author.id)
-        lust = await affection.get_lust(message.author.id)
+        arousal = await affection.get_arousal(message.author.id)
+        lust_level = await affection.get_lust_level(message.author.id)
+        lust_name = affection.get_lust_label(lust_level)
         exp = await affection.get_experience(message.author.id)
         bond_bar = make_bar(bond, 100.0, 10)
-        lust_bar = make_bar(lust, 100.0, 10)
+        arousal_bar = make_bar(arousal, 100.0, 10)
         vec = d.get("vec") or {}
         dom = list(d.get("dominant") or [])
         mood_label = _MOOD_VI.get(d["label"], d["label"])
@@ -579,11 +590,9 @@ async def handle_command(message: discord.Message, user_text: str) -> bool:
         if rel_axes:
             parts.append("↔️ **Quan hệ:** " + ", ".join(
                 f"{_REL_AXIS_VI.get(a, a)} {_REL_WORD_VI.get(w, w)}" for a, w in rel_axes))
-        aroused = await affection.check_aroused_state(message.author.id)
-        if aroused:
-            parts.append(f"🔥 **Aroused** — lv{aroused}")
-        if is_dm:
-            parts.append(f"🔥 **Lust** — {lust_bar} {lust:.1f}%")
+        parts.append(f"🔥 **Lust nền** — lv{lust_level}/5 · {lust_name}")
+        if arousal > 0:
+            parts.append(f"💗 **Arousal** — {arousal_bar} {arousal:.0f}%")
         from affection import experience as experience_mgr, special
         if exp > 0:
             exp_label, exp_desc = experience_mgr.get_experience_label(exp)

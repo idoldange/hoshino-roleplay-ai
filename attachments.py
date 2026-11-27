@@ -14,6 +14,32 @@ _IMAGE_MAGIC = (
     b"BM",                  # BMP
 )
 
+_AUDIO_FORMAT_BY_EXT = {
+    ".mp3": "mp3",
+    ".wav": "wav",
+    ".m4a": "m4a",
+    ".ogg": "ogg",
+    ".flac": "flac",
+    ".aac": "aac",
+    ".opus": "opus",
+}
+
+_AUDIO_FORMAT_BY_MIME = {
+    "mpeg": "mp3",
+    "mp3": "mp3",
+    "wav": "wav",
+    "x-wav": "wav",
+    "wave": "wav",
+    "mp4": "m4a",
+    "x-m4a": "m4a",
+    "m4a": "m4a",
+    "ogg": "ogg",
+    "opus": "opus",
+    "flac": "flac",
+    "x-flac": "flac",
+    "aac": "aac",
+}
+
 
 def _is_image_bytes(raw: bytes, filename: str) -> bool:
     """Xác thực nội dung thực sự là ảnh qua magic bytes, tránh file được
@@ -27,10 +53,34 @@ def _is_image_bytes(raw: bytes, filename: str) -> bool:
         return True
     return False
 
-async def process_attachments(message_or_attachments, allow_images: bool = True):
+
+def _audio_format(att, ctype: str) -> str:
+    ext = os.path.splitext(att.filename.lower())[1]
+    if ext in _AUDIO_FORMAT_BY_EXT:
+        return _AUDIO_FORMAT_BY_EXT[ext]
+    if ctype.startswith("audio/"):
+        subtype = ctype.split("/", 1)[1].split(";", 1)[0].strip()
+        return _AUDIO_FORMAT_BY_MIME.get(subtype, subtype or "mp3")
+    return "mp3"
+
+
+def _video_mime(att, ctype: str) -> str:
+    if ctype.startswith("video/"):
+        return ctype.split(";", 1)[0].strip()
+    return mimetypes.guess_type(att.filename)[0] or "video/mp4"
+
+
+async def process_attachments(
+    message_or_attachments,
+    allow_images: bool = True,
+    allow_audio: bool = False,
+    allow_video: bool = False,
+):
     attachments = getattr(message_or_attachments, "attachments", message_or_attachments)
     extra_text_parts = []
     image_parts = []
+    audio_parts = []
+    video_parts = []
 
     for att in attachments:
         ctype = (att.content_type or "").lower()
@@ -39,7 +89,8 @@ async def process_attachments(message_or_attachments, allow_images: bool = True)
 
         is_image = ctype.startswith("image/") or ext in config.IMAGE_EXTENSIONS
         is_audio = ctype.startswith("audio/") or ext in config.AUDIO_EXTENSIONS
-        is_text = (not is_image and not is_audio) and (
+        is_video = ctype.startswith("video/") or ext in config.VIDEO_EXTENSIONS
+        is_text = (not is_image and not is_audio and not is_video) and (
             ctype.startswith("text/") or ctype in config.TEXT_EXTRA_MIMES or ext in config.TEXT_EXTENSIONS
         )
 
@@ -72,9 +123,52 @@ async def process_attachments(message_or_attachments, allow_images: bool = True)
                 extra_text_parts.append(f"[Lỗi đọc ảnh '{att.filename}': {e}]")
 
         elif is_audio:
-            extra_text_parts.append(
-                f"[Đính kèm âm thanh '{att.filename}' - model hiện tại không hỗ trợ audio nên đã bỏ qua]"
-            )
+            if not allow_audio:
+                extra_text_parts.append(
+                    f"[Đính kèm âm thanh '{att.filename}' - model hiện tại không hỗ trợ audio nên đã bỏ qua]"
+                )
+                continue
+            if len(audio_parts) >= config.MAX_AUDIOS_PER_MESSAGE:
+                extra_text_parts.append(f"[Bỏ qua âm thanh '{att.filename}' vì đã đủ số audio tối đa cho 1 tin nhắn]")
+                continue
+            if att.size and att.size > config.MAX_AUDIO_BYTES:
+                extra_text_parts.append(f"[Âm thanh '{att.filename}' quá lớn ({att.size} bytes), bỏ qua]")
+                continue
+            try:
+                raw = await att.read()
+                b64 = base64.b64encode(raw).decode("ascii")
+                audio_parts.append(
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"data": b64, "format": _audio_format(att, ctype)},
+                    }
+                )
+            except Exception as e:
+                logger.exception("Lỗi đọc âm thanh đính kèm '%s'", att.filename)
+                extra_text_parts.append(f"[Lỗi đọc âm thanh '{att.filename}': {e}]")
+
+        elif is_video:
+            if not allow_video:
+                extra_text_parts.append(
+                    f"[Đính kèm video '{att.filename}' - model hiện tại không hỗ trợ video nên đã bỏ qua]"
+                )
+                continue
+            if len(video_parts) >= config.MAX_VIDEOS_PER_MESSAGE:
+                extra_text_parts.append(f"[Bỏ qua video '{att.filename}' vì đã đủ số video tối đa cho 1 tin nhắn]")
+                continue
+            if att.size and att.size > config.MAX_VIDEO_BYTES:
+                extra_text_parts.append(f"[Video '{att.filename}' quá lớn ({att.size} bytes), bỏ qua]")
+                continue
+            try:
+                raw = await att.read()
+                mime = _video_mime(att, ctype)
+                b64 = base64.b64encode(raw).decode("ascii")
+                video_parts.append(
+                    {"type": "video_url", "video_url": {"url": f"data:{mime};base64,{b64}"}}
+                )
+            except Exception as e:
+                logger.exception("Lỗi đọc video đính kèm '%s'", att.filename)
+                extra_text_parts.append(f"[Lỗi đọc video '{att.filename}': {e}]")
 
         elif is_text:
             try:
@@ -90,4 +184,4 @@ async def process_attachments(message_or_attachments, allow_images: bool = True)
         else:
             extra_text_parts.append(f"[Tệp đính kèm '{att.filename}' không được hỗ trợ, đã bỏ qua]")
 
-    return "\n\n".join(extra_text_parts), image_parts
+    return "\n\n".join(extra_text_parts), image_parts, audio_parts, video_parts

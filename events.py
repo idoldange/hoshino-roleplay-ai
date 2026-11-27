@@ -62,13 +62,18 @@ async def _run_request(channel, request, state):
                 model_info = request.get("model_info") or await get_model_for_user(request_author.id)
                 reply, used_messages = await call_model(
                     channel, user_text, request_author,
-                    image_parts=request["image_parts"], message_id=message.id,
+                    image_parts=request["image_parts"],
+                    audio_parts=request["audio_parts"],
+                    video_parts=request["video_parts"],
+                    message_id=message.id,
                     stream_reply=True, nsfw=nsfw,
                     reply_message=message, on_first_send=mark_started,
                     affection_context=request["affection_context"],
                     reply_context=request["reply_context"],
                     model_name=model_info.get("id"),
-                    allow_images=model_info.get("multimodal", True),
+                    allow_images=model_info.get("multimodal", model_info.get("image", True)),
+                    allow_audio=model_info.get("audio", False),
+                    allow_video=model_info.get("video", False),
                     model_info=model_info,
                 )
             except asyncio.CancelledError:
@@ -210,8 +215,11 @@ async def on_message(message: discord.Message):
     except endpoint_profiles.ProfileStoreError as exc:
         await message.reply(str(exc))
         return
-    extra_text, image_parts = await process_attachments(
-        message, allow_images=model_info.get("multimodal", True)
+    extra_text, image_parts, audio_parts, video_parts = await process_attachments(
+        message,
+        allow_images=model_info.get("multimodal", model_info.get("image", True)),
+        allow_audio=model_info.get("audio", False),
+        allow_video=model_info.get("video", False),
     )
     if extra_text:
         user_text = f"{user_text}\n\n{extra_text}".strip()
@@ -233,6 +241,8 @@ async def on_message(message: discord.Message):
             "author": message.author,
             "user_text": user_text,
             "image_parts": image_parts,
+            "audio_parts": audio_parts,
+            "video_parts": video_parts,
             "nsfw": nsfw,
             "model_info": model_info,
             "affection_context": affection_context,

@@ -42,7 +42,8 @@ _CONTROL_TAG_RE = re.compile(
     r"|<shocked>.*?</shocked>"
     r"|<bond>.*?</bond>"
     r"|<aroused\s*/>"
-    r"|<lust_change\s+amount\s*=\s*['\"][+-]?\d+(?:\.\d+)?['\"]\s*/>|<lust\s*/>"
+    r"|<arousal_change\s+amount\s*=\s*['\"][+-]?\d+(?:\.\d+)?['\"]\s*/>"
+    r"|<lust_change\s+amount\s*=\s*['\"][+-]?\d+(?:\.\d+)?['\"]\s*/>|<climax\s*/>|<lust\s*/>"
     r"|<experience_change\s+amount\s*=\s*['\"][+-]?\d+(?:\.\d+)?['\"]\s*/>"
     r"|<bond_change\b[^>]*?/\s*>"
     r"|<:mood>\s*[+-]?\d+(?:\.\d+)?\s*</mood>"
@@ -55,12 +56,12 @@ _CONTROL_TAG_RE = re.compile(
 )
 _UNCLOSED_MOOD_RE = re.compile(r"<:?mood\b.*$", re.IGNORECASE | re.DOTALL)
 _CONTROL_TAG_OPEN_RE = re.compile(
-    r"<(?:mood|shocked|bond|aroused|lust_change|lust|experience_change|bond_change)\b|</?:?mood\b|<:mood\b",
+    r"<(?:mood|shocked|bond|aroused|arousal_change|lust_change|lust|climax|experience_change|bond_change)\b|</?:?mood\b|<:mood\b",
     re.IGNORECASE,
 )
 _CONTROL_TAG_PREFIXES = (
-    "<mood", "<shocked", "<bond", "<aroused", "<lust_change", "<lust", "<experience_change",
-    "<bond_change", "</mood", "</:mood", "<:mood",
+    "<mood", "<shocked", "<bond", "<aroused", "<arousal_change", "<lust_change", "<lust", "<climax",
+    "<experience_change", "<bond_change", "</mood", "</:mood", "<:mood",
 )
 
 
@@ -256,6 +257,8 @@ async def call_model(
     user_text: str,
     author,
     image_parts=None,
+    audio_parts=None,
+    video_parts=None,
     message_id=None,
     stream_reply: bool = False,
     nsfw: bool = False,
@@ -265,6 +268,8 @@ async def call_model(
     reply_context=None,
     model_name: str | None = None,
     allow_images: bool = True,
+    allow_audio: bool = False,
+    allow_video: bool = False,
     model_info: dict | None = None,
 ):
     """
@@ -281,11 +286,16 @@ async def call_model(
     db.save_reasoning đúng 1 lần sau khi stream xong.
     """
     messages = await build_messages_from_channel(
-        channel, user_text, author, image_parts=image_parts, message_id=message_id,
+        channel, user_text, author, image_parts=image_parts,
+        audio_parts=audio_parts, video_parts=video_parts, message_id=message_id,
         enable_nsfw=nsfw, affection_context=affection_context, reply_context=reply_context,
-        allow_images=allow_images,
+        allow_images=allow_images, allow_audio=allow_audio, allow_video=allow_video,
     )
-    has_images = bool(image_parts and allow_images)
+    has_media = bool(
+        (image_parts and allow_images)
+        or (audio_parts and allow_audio)
+        or (video_parts and allow_video)
+    )
     retried_no_images = False
     # check perm coi dc gui tin nhan ko
     #channel la message.channel
@@ -299,8 +309,9 @@ async def call_model(
         return
     
     logger.info(
-        "call_model bắt đầu: author=%s (%s) channel=%s len(user_text)=%d ảnh=%d",
-        author, author.id, channel.id, len(user_text), len(image_parts or []),
+        "call_model bắt đầu: author=%s (%s) channel=%s len(user_text)=%d ảnh=%d audio=%d video=%d",
+        author, author.id, channel.id, len(user_text),
+        len(image_parts or []), len(audio_parts or []), len(video_parts or []),
     )
     typing_manager = channel.typing()
     await typing_manager.__aenter__()
@@ -317,7 +328,7 @@ async def call_model(
                 logger.exception("Lỗi khi tắt typing indicator author=%s channel=%s", author.id, channel.id)
 
     try:
-        use_tools = True
+        use_tools = bool((model_info or {}).get("tool", True))
         max_output_tokens = config.MAX_OUTPUT_TOKENS_DEFAULT
         call_model._retry_count = 0
         #log prompt
@@ -410,18 +421,20 @@ async def call_model(
             except Exception as exc:
                 if (
                     not retried_no_images
-                    and has_images
+                    and has_media
                     and _is_unsupported_media(exc)
                 ):
                     retried_no_images = True
                     logger.warning(
-                        "Backend không nhận ảnh, thử lại chỉ văn bản cho author=%s channel=%s",
+                        "Backend không nhận media (ảnh/audio/video), thử lại chỉ văn bản cho author=%s channel=%s",
                         author.id, channel.id,
                     )
                     text_only = await build_messages_from_channel(
-                        channel, user_text, author, image_parts=None, message_id=message_id,
+                        channel, user_text, author, image_parts=None,
+                        audio_parts=None, video_parts=None, message_id=message_id,
                         enable_nsfw=nsfw, affection_context=affection_context,
                         reply_context=reply_context, allow_images=False,
+                        allow_audio=False, allow_video=False,
                     )
                     messages = text_only
                     continue
@@ -451,18 +464,17 @@ async def call_model(
                     turn_id=message_id,
                 ).strip() or "..."
 
-                # Lust tags
-                lust_change, lust_reset = affection.parse_lust_change_tag(final_reply)
-                if lust_change != 0.0:
-                    if lust_change > 0:
-                        await affection.increment_lust(author.id, lust_change)
-                        logger.info("[lust] Incremented lust for user=%s by %+g", author.id, lust_change)
-                    else:
-                        await affection.decrement_lust(author.id, abs(lust_change))
-                        logger.info("[lust] Decremented lust for user=%s by %+g", author.id, abs(lust_change))
-                if lust_reset:
-                    await affection.reset_lust(author.id)
-                    logger.info("[lust] Reset lust for user=%s (climax)", author.id)
+                # Arousal (transient) + Lust (persistent level)
+                lust_tags = affection.parse_lust_tags(final_reply)
+                if lust_tags["arousal"]:
+                    await affection.add_arousal(author.id, lust_tags["arousal"])
+                    logger.info("[arousal] %+g for user=%s", lust_tags["arousal"], author.id)
+                if lust_tags["lust"]:
+                    level = await affection.add_lust_level(author.id, lust_tags["lust"])
+                    logger.info("[lust] level %+d for user=%s -> lv%d", lust_tags["lust"], author.id, level)
+                if lust_tags["climax"]:
+                    await affection.reset_arousal(author.id)
+                    logger.info("[arousal] reset for user=%s (climax)", author.id)
                 final_reply = affection.strip_lust_tags(final_reply)
 
                 # Experience tags

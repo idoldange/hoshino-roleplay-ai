@@ -68,8 +68,9 @@ def _project_daily_summary(summary_row: dict | None, allow_h_preference: bool) -
 
 async def build_messages_from_channel(
     channel: discord.abc.Messageable, current_user_text: str, current_author, image_parts=None,
+    audio_parts=None, video_parts=None,
     message_id=None, enable_nsfw=False, affection_context=None, reply_context=None,
-    allow_images: bool = True,
+    allow_images: bool = True, allow_audio: bool = False, allow_video: bool = False,
 ):
     collected = []
     pending_clear_confirm = False
@@ -112,11 +113,6 @@ async def build_messages_from_channel(
         system_content += f"\n\n{affection.build_prompt_block(affection_context, nsfw=enable_nsfw)}"
     if reply_context:
         system_content += f"\n\n(Replying to {reply_context})"
-    # Inject lust bar for NSFW channels (only when lust > 0)
-    if enable_nsfw and affection_context:
-        lust_value = affection_context.get("lust_value", 0.0)
-        if lust_value > 0:
-            system_content += f"\n\n[Lust: {lust_value:.1f}%]"
     bot_streak = _consecutive_bot_streak(collected, current_author)
     system_content += f"\n\n{build_context_info(channel, current_author, bot_streak)}"
     system_content += "\n\n[Nhắc cuối] Trả lời luôn, không suy nghĩ lan man, không nháp nhiều phương án."
@@ -131,31 +127,49 @@ async def build_messages_from_channel(
             role = "user"
             author_prefix = f"{m.author.display_name}: "
 
-        attachment_text, attachment_images = await process_attachments(
-            m, allow_images=allow_images
+        attachment_text, attachment_images, attachment_audios, attachment_videos = await process_attachments(
+            m, allow_images=allow_images, allow_audio=allow_audio, allow_video=allow_video
         )
         text_content = m.clean_content.strip()
         if attachment_text:
             text_content = f"{text_content}\n\n{attachment_text}".strip()
-        if not text_content and not attachment_images:
+        if not text_content and not (attachment_images or attachment_audios or attachment_videos):
             continue
 
         text_content = f"{author_prefix}{text_content}" if text_content else author_prefix.rstrip()
-        if attachment_images:
-            content = [{"type": "text", "text": text_content}] + attachment_images
+        attachment_media = attachment_images + attachment_audios + attachment_videos
+        if attachment_media:
+            content = [{"type": "text", "text": text_content}] + attachment_media
         else:
             content = text_content
 
         msgs.append({"role": role, "content": content})
 
     text_part = f"{current_author.display_name}: {current_user_text}"
-    if image_parts and allow_images:
-        msgs.append({"role": "user", "content": [{"type": "text", "text": text_part}] + image_parts})
+    media_parts = []
+    skipped = []
+    if image_parts:
+        if allow_images:
+            media_parts += image_parts
+        else:
+            skipped.append(f"{len(image_parts)} ảnh")
+    if audio_parts:
+        if allow_audio:
+            media_parts += audio_parts
+        else:
+            skipped.append(f"{len(audio_parts)} audio")
+    if video_parts:
+        if allow_video:
+            media_parts += video_parts
+        else:
+            skipped.append(f"{len(video_parts)} video")
+    if skipped:
+        text_part += (
+            f"\n\n[Hệ thống: người dùng đã gửi {', '.join(skipped)}, "
+            "nhưng model hiện tại không hỗ trợ nên đã bỏ qua]"
+        )
+    if media_parts:
+        msgs.append({"role": "user", "content": [{"type": "text", "text": text_part}] + media_parts})
     else:
-        if image_parts:
-            text_part += (
-                f"\n\n[Hệ thống: người dùng đã gửi {len(image_parts)} ảnh, "
-                "nhưng model hiện tại không xem được ảnh nên đã bỏ qua]"
-            )
         msgs.append({"role": "user", "content": text_part})
     return msgs

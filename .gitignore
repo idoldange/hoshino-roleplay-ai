@@ -57,3 +57,13 @@ tmp/
 logs/
 
 .mcp_undo/
+
+# Temporary / scratch & test scripts (chỉ ở thư mục gốc)
+/tmp_*.py
+/temp_*.py
+/scratch_*.py
+/check_*.py
+/try_*.py
+/test_*.py
+/*_test.py
+/*.bak

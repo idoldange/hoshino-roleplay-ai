@@ -49,11 +49,20 @@ def _parse_model_choices(raw: str) -> dict[str, dict]:
         description = ""
         if isinstance(entry, str):
             model_id = entry.strip()
-            multimodal = True
+            image = True
+            audio = False
+            video = False
+            tool = True
         elif isinstance(entry, dict):
             raw_id = entry.get("id")
             model_id = str(raw_id).strip() if raw_id is not None else ""
-            multimodal = _as_bool(entry.get("multimodal"), default=True)
+            image = entry.get("image", entry.get("vision"))
+            if image is None:
+                image = entry.get("multimodal", True)
+            image = _as_bool(image, default=True)
+            audio = _as_bool(entry.get("audio"), default=False)
+            video = _as_bool(entry.get("video"), default=False)
+            tool = _as_bool(entry.get("tool"), default=True)
             description = str(entry.get("description") or entry.get("desc") or "").strip()
         else:
             continue
@@ -64,7 +73,11 @@ def _parse_model_choices(raw: str) -> dict[str, dict]:
             continue
         choices[name[:100]] = {
             "id": model_id,
-            "multimodal": multimodal,
+            "multimodal": image,   # giữ key cũ: "multimodal" = khả năng xem ảnh
+            "image": image,
+            "audio": audio,
+            "video": video,
+            "tool": tool,
             "description": description[:100],
         }
     return choices
@@ -116,10 +129,15 @@ TEXT_EXTENSIONS = {
 TEXT_EXTRA_MIMES = {"application/json", "application/xml", "application/x-yaml"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac", ".opus"}
+VIDEO_EXTENSIONS = {".mp4", ".mpeg", ".mpg", ".mov", ".webm", ".m4v", ".avi", ".mkv"}
 
 MAX_TEXT_FILE_CHARS = 4000
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_AUDIO_BYTES = 20 * 1024 * 1024
+MAX_VIDEO_BYTES = 20 * 1024 * 1024
 MAX_IMAGES_PER_MESSAGE = 4
+MAX_AUDIOS_PER_MESSAGE = 2
+MAX_VIDEOS_PER_MESSAGE = 1
 
 THOUGHT_TAG_PAIRS = (
     ("<|channel>thought", "<channel|>"),
@@ -359,3 +377,26 @@ MOOD_LABEL_DESC = {
     "angered": "Hoshino đang thực sự giận, lạnh nhạt và khó chịu.",
     "shocked": "Hoshino đang sốc, hoàn toàn bất ngờ.",
 }
+
+# ── Lust (persistent level) + Arousal (transient) ──
+# Lust = tính cách dâm LÂU DÀI, lưu DB theo cấp độ 0..LUST_MAX_LEVEL, mặc định KHÔNG decay.
+LUST_MAX_LEVEL = 5
+LUST_LEVEL_NAMES = ("Trong sáng", "Tò mò", "Hứng thú", "Dâm ngầm", "Dâm rõ", "Dâm cực")
+LUST_LEVEL_DESC = {
+    0: "chưa để ý gì đến chuyện 18+, thuần khiết",
+    1: "bắt đầu tò mò, ngại nhưng không ghét",
+    2: "hứng thú rõ, dễ bị trêu",
+    3: "dâm ngầm, nghĩ nhiều nhưng còn giữ kẽ",
+    4: "dâm rõ, chủ động hơn",
+    5: "dâm cực, gần như lúc nào cũng nghĩ tới",
+}
+LUST_TAG_MAX = 1              # 1 tag chỉ đổi tối đa 1 cấp
+LUST_DAILY_CAP = 2           # tối đa +2 cấp/ngày/user (chống spam)
+LUST_DECAY_PER_DAY = 0.0     # 0 = không decay; >0 = mất bấy nhiêu cấp/ngày
+
+# Arousal = hưng phấn TỨC THỜI 0..100, decay theo half-life, reset khi climax.
+AROUSAL_MAX = 100.0
+AROUSAL_HALFLIFE = 30 * 60.0   # giây
+AROUSAL_LEVEL1 = 50.0
+AROUSAL_LEVEL2 = 75.0
+AROUSAL_TAG_MAX = 40.0
