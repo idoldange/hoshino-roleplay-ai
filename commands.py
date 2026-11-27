@@ -3,6 +3,7 @@ import re
 import discord
 
 import config
+import gifts
 import endpoint_profiles
 import model_settings
 from client import db
@@ -81,6 +82,8 @@ HELP_TEXT = f"""**Lệnh của Hoshino Bot** (prefix: `{config.BOT_PREFIX}`)
 `{config.BOT_PREFIX} reasoning` - Xem reasoning gần nhất mà model đã suy nghĩ ở kênh này (nếu model có hỗ trợ)
 `{config.BOT_PREFIX} affection` - Xem mood, bond, lust, experience và quan hệ đặc biệt hiện tại
 `{config.BOT_PREFIX} lust reset` - Reset lust về 0 (manual)
+`{config.BOT_PREFIX} speedrun` - Bật/tắt speedrun mode (Bond tăng nhanh, Lust & arousal dễ lên hơn)
+`{config.BOT_PREFIX} gift` - Tặng quà cho Hoshino (dropdown, `gift <món>` hoặc quà tự chọn)
 `{config.BOT_PREFIX} help` - Xem lại danh sách lệnh này
 
 """
@@ -449,6 +452,11 @@ async def handle_command(message: discord.Message, user_text: str) -> bool:
 
     if lowered == "clear":
         await message.channel.send(config.CLEAR_CONFIRM_TEXT)
+        return True
+
+    if lowered == "gift" or lowered.startswith("gift "):
+        arg = user_text.strip()[4:].strip()
+        await gifts.handle(message, arg)
         return True
 
     if lowered == "help":
