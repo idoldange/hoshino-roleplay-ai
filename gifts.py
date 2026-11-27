@@ -160,6 +160,18 @@ def _is_nsfw(message):
     return message.guild is None or bool(getattr(message.channel, "nsfw", False))
 
 
+async def _notice(message, interaction, text):
+    if interaction is not None:
+        try:
+            await interaction.edit_original_response(
+                embed=discord.Embed(title="Không tặng được", description=text), view=None
+            )
+            return
+        except Exception:
+            pass
+    await message.channel.send(text)
+
+
 async def _apply(user_id, gift, scope):
     from affection import affection
     from affection import bond as bond_mod
@@ -198,20 +210,20 @@ async def _enqueue(message, text, nsfw, custom=False, forced=None):
     })
 
 
-async def give(message, gift):
+async def give(message, gift, interaction=None):
     user_id = message.author.id
     nsfw = _is_nsfw(message)
     from affection import bond as bond_mod
     error = check(gift, bond_mod.peek(user_id), nsfw)
     if error:
-        await message.channel.send(f"Uhe~... {error}")
+        await _notice(message, interaction, f"Uhe~... {error}")
         return
     if gift.lust and await _has(user_id, f"lust:{gift.key}"):
-        await message.channel.send("Món này em nhận rồi... đừng tặng lại nữa nha Sensei.")
+        await _notice(message, interaction, "Món này em nhận rồi... đừng tặng lại nữa nha Sensei.")
         return
     left = await cooldown_left(user_id)
     if left:
-        await message.channel.send(f"Còn {left // 60} phút {left % 60} giây nữa mới tặng tiếp được.")
+        await _notice(message, interaction, f"Còn {left // 60} phút {left % 60} giây nữa mới tặng tiếp được.")
         return
     await _apply(user_id, gift, _scope(message))
     await _log(user_id, f"lust:{gift.key}" if gift.lust else gift.key, None, gift.bond)
@@ -226,19 +238,19 @@ async def give(message, gift):
     })
 
 
-async def give_custom(message, text):
+async def give_custom(message, text, interaction=None):
     user_id = message.author.id
     text = sanitize_custom(text)
     if not text:
-        await message.channel.send("Sensei chưa nhập gì mà?")
+        await _notice(message, interaction, "Sensei chưa nhập gì mà?")
         return
     left = await cooldown_left(user_id)
     if left:
-        await message.channel.send(f"Còn {left // 60} phút {left % 60} giây nữa mới tặng tiếp được.")
+        await _notice(message, interaction, f"Còn {left // 60} phút {left % 60} giây nữa mới tặng tiếp được.")
         return
     day = await _day_key()
     if await _custom_count(user_id, day) >= CUSTOM_DAILY_LIMIT:
-        await message.channel.send("Hôm nay Sensei tặng quà tự chọn nhiều rồi, mai nhé.")
+        await _notice(message, interaction, "Hôm nay Sensei tặng quà tự chọn nhiều rồi, mai nhé.")
         return
     await _log(user_id, "custom", text, 0.0)
     prompt = (
@@ -269,7 +281,7 @@ class GiftSelect(discord.ui.Select):
             description=f"**{self.owner.author.display_name}** đã tặng Hoshino **{gift.name}** — {gift.desc}",
         )
         await interaction.response.edit_message(embed=embed, view=None)
-        await give(self.owner, gift)
+        await give(self.owner, gift, interaction)
 
 
 class CustomGiftModal(discord.ui.Modal, title="Quà tự chọn"):
@@ -293,7 +305,7 @@ class CustomGiftModal(discord.ui.Modal, title="Quà tự chọn"):
             await interaction.message.edit(embed=embed, view=None)
         except Exception:
             pass
-        await give_custom(self.owner, text)
+        await give_custom(self.owner, text, interaction)
 
 
 class GiftView(discord.ui.View):
