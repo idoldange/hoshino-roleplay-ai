@@ -77,6 +77,12 @@ class LustManager:
     async def add_lust_level(self, user_id: int, delta: int) -> int:
         return await db.add_lust_level(user_id, delta)
 
+    async def set_lust_level(self, user_id: int, level: int) -> int:
+        """Set the persistent lust level directly (bypasses per-tag/daily clamps)."""
+        level = max(0, min(int(C.LUST_MAX_LEVEL), int(level)))
+        await db.set_lust_level(user_id, level)
+        return level
+
     def lust_name(self, level: int) -> str:
         level = max(0, min(int(C.LUST_MAX_LEVEL), int(level)))
         return C.LUST_LEVEL_NAMES[level]

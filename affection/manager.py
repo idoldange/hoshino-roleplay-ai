@@ -33,9 +33,8 @@ from config import (
     LUST_MAX_LEVEL,
     SPEEDRUN_BOND_MULT,
     SPEEDRUN_BOND_START,
-    SPEEDRUN_LUST_START,
+    SPEEDRUN_LUST_BONUS,
     SPEEDRUN_NSFW_BOND_THRESHOLD,
-    SPEEDRUN_NSFW_LUST_LEVEL,
     TAG_DEDUPE_WINDOW,
 )
 from affection import mood as _mood
@@ -114,13 +113,55 @@ class AffectionManager:
         self._speedrun_cache[uid] = state
         return state
 
-    async def toggle_speedrun(self, user_id: int) -> bool:
+    async def toggle_speedrun(self, user_id: int) -> dict:
         uid = int(user_id)
         current = await self.is_speedrun(uid)
         new_state = not current
         await db.set_setting(uid, C.SPEEDRUN_SETTING_KEY, "1" if new_state else "0")
         self._speedrun_cache[uid] = new_state
-        return new_state
+        result = {
+            "state": new_state,
+            "bond": _bond.get(uid),
+            "lust": await _lust.get_lust_level(uid),
+            "bonus_applied": False,
+        }
+        if new_state:
+            result.update(await self._apply_speedrun_bonus(uid))
+            result["bond"] = _bond.get(uid)
+            result["lust"] = await _lust.get_lust_level(uid)
+        return result
+
+    async def _apply_speedrun_bonus(self, user_id: int) -> dict:
+        """One-time boost when speedrun is first enabled (never re-applied)."""
+        uid = int(user_id)
+        if await db.get_setting(uid, C.SPEEDRUN_BONUS_APPLIED_KEY) == "1":
+            return {"bonus_applied": False, "bond_raised": False}
+        bond_before = _bond.get(uid)
+        bond_raised = bond_before < SPEEDRUN_BOND_START
+        if bond_raised:
+            await _bond.set_bond(uid, SPEEDRUN_BOND_START)
+        lust_before = await _lust.get_lust_level(uid)
+        lust_after = min(int(LUST_MAX_LEVEL), lust_before + int(SPEEDRUN_LUST_BONUS))
+        if lust_after != lust_before:
+            await _lust.set_lust_level(uid, lust_after)
+        await db.set_setting(uid, C.SPEEDRUN_BONUS_APPLIED_KEY, "1")
+        return {
+            "bonus_applied": True,
+            "bond_raised": bond_raised,
+            "bond_before": bond_before,
+            "lust_before": lust_before,
+            "lust_after": lust_after,
+        }
+
+    async def _migrate_speedrun_bonus(self):
+        """Apply the one-time bonus to users who enabled speedrun before it existed."""
+        try:
+            user_ids = await db.get_user_ids_with_setting(C.SPEEDRUN_SETTING_KEY, "1")
+            for uid in user_ids:
+                await self._apply_speedrun_bonus(uid)
+        except Exception as e:
+            from console import console
+            console.log(f"[speedrun] migration failed: {e}", "WARN")
 
     async def initialize(self):
         await _mood.initialize()
@@ -128,6 +169,7 @@ class AffectionManager:
         await _lust.initialize()
         await _experience.initialize()
         await _relation.initialize()
+        await self._migrate_speedrun_bonus()
 
     async def start(self):
         """Pass to asyncio.create_task()."""
@@ -403,9 +445,6 @@ class AffectionManager:
         arousal_value = await _lust.get_arousal(user_id)
         arousal_level = _lust.arousal_level(arousal_value)
         lust_level = await _lust.get_lust_level(user_id)
-        if speedrun and lust_level == 0:
-            await _lust.add_lust_level(user_id, SPEEDRUN_LUST_START)
-            lust_level = SPEEDRUN_LUST_START
         return {
             "was_sleeping": was_sleeping,
             "mood_label":   d["label"],
@@ -466,7 +505,9 @@ class AffectionManager:
             if not nsfw:
                 lines.append("Đang hơi ngại/hưng nhẹ. Giữ không khí SFW trong sáng, KHÔNG lái sang 18+.")
             else:
-                bond_allows_proactive = ctx.get("bond_value", 0.0) >= AFFECTION_AROUSED_BOND_THRESHOLD
+                speedrun = bool(ctx.get("speedrun"))
+                bond_threshold = SPEEDRUN_NSFW_BOND_THRESHOLD if speedrun else AFFECTION_AROUSED_BOND_THRESHOLD
+                bond_allows_proactive = ctx.get("bond_value", 0.0) >= bond_threshold
                 lust_level = int(ctx.get("lust_level", 0) or 0)
                 lust_allows_proactive = lust_level >= LUST_MAX_LEVEL - 1
                 allows_proactive = bond_allows_proactive or lust_allows_proactive
@@ -477,13 +518,18 @@ class AffectionManager:
                 if arousal_level == 1:
                     lines.append("Arousal lv1: Đổi tone ngượng ngùng tự nhiên, không vội thân mật sâu.")
                 elif allows_proactive:
-                    reason = "Bond ≥75" if bond_allows_proactive else "Lust nền cao"
+                    if bond_allows_proactive:
+                        reason = f"Bond ≥{int(bond_threshold)}" + (" (speedrun)" if speedrun else "")
+                    else:
+                        reason = "Lust nền cao"
                     lines.append(
                         f"{reason}: Có thể chủ động thả thính/đáp lại 18+ nếu đúng ngữ cảnh, "
                         "giữ đúng nét lười/thụ động."
                     )
                 else:
-                    lines.append("Bond <75: Chỉ đáp lại khi Sensei chủ động tiến tới trước, CẤM gạ gẫm trước.")
+                    lines.append(
+                        f"Bond <{int(bond_threshold)}: Chỉ đáp lại khi Sensei chủ động tiến tới trước, CẤM gạ gẫm trước."
+                    )
 
         if nsfw:
             lines.append(

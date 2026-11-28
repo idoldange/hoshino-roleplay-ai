@@ -733,3 +733,12 @@ class Database:
                 (user_id, key, value, now),
             )
             await db.commit()
+
+    async def get_user_ids_with_setting(self, key: str, value: str) -> list[int]:
+        """Return all user IDs whose setting `key` equals `value`."""
+        async with aiosqlite.connect(self.path) as db:
+            async with db.execute(
+                "SELECT user_id FROM user_settings WHERE key = ? AND value = ?", (key, value)
+            ) as cur:
+                rows = await cur.fetchall()
+        return [int(row[0]) for row in rows]

@@ -241,8 +241,8 @@ BASE_EXP_MAX = AFFECTION_BASE_EXP_MAX
 
 # Bond idle decay: each whole day beyond the grace period costs BOND_DECAY_PER_DAY,
 # never dropping below the lower bound of the user's current rank.
-BOND_DECAY_GRACE_DAYS = 7.0
-BOND_DECAY_PER_DAY = 0.5
+BOND_DECAY_GRACE_DAYS = 30.0
+BOND_DECAY_PER_DAY = 0.25
 BOND_DECAY_CHECK_SECS = 3600.0
 
 # Model-driven bond change via <bond>N</bond>
@@ -380,11 +380,11 @@ MOOD_LABEL_DESC = {
 
 # ── Speedrun mode ──
 SPEEDRUN_SETTING_KEY = "speedrun"
+SPEEDRUN_BONUS_APPLIED_KEY = "speedrun_bonus_applied"
 SPEEDRUN_BOND_START = 60.0
-SPEEDRUN_LUST_START = 3
+SPEEDRUN_LUST_BONUS = 4
 SPEEDRUN_BOND_MULT = 2.5
 SPEEDRUN_NSFW_BOND_THRESHOLD = 50.0
-SPEEDRUN_NSFW_LUST_LEVEL = 4
 
 # ── Lust (persistent level) + Arousal (transient) ──
 # Lust = tính cách dâm LÂU DÀI, lưu DB theo cấp độ 0..LUST_MAX_LEVEL, mặc định KHÔNG decay.

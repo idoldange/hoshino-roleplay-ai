@@ -82,7 +82,7 @@ HELP_TEXT = f"""**Lệnh của Hoshino Bot** (prefix: `{config.BOT_PREFIX}`)
 `{config.BOT_PREFIX} reasoning` - Xem reasoning gần nhất mà model đã suy nghĩ ở kênh này (nếu model có hỗ trợ)
 `{config.BOT_PREFIX} affection` - Xem mood, bond, lust, experience và quan hệ đặc biệt hiện tại
 `{config.BOT_PREFIX} lust reset` - Reset lust về 0 (manual)
-`{config.BOT_PREFIX} speedrun` - Bật/tắt speedrun mode (Bond tăng nhanh, Lust & arousal dễ lên hơn)
+`{config.BOT_PREFIX} speedrun` - Bật/tắt speedrun mode (lần đầu bật: Bond lên 60 + cộng Lust; Bond tăng x2.5, dễ chủ động 18+ hơn. Tắt KHÔNG mất tiến độ đã gain)
 `{config.BOT_PREFIX} gift` - Tặng quà cho Hoshino (dropdown, `gift <món>` hoặc quà tự chọn)
 `{config.BOT_PREFIX} help` - Xem lại danh sách lệnh này
 
@@ -555,10 +555,35 @@ async def handle_command(message: discord.Message, user_text: str) -> bool:
         return True
 
     if lowered == "speedrun":
-        new_state = await affection.toggle_speedrun(message.author.id)
-        await message.channel.send(
-            "Uhe~ Speedrun mode đã BẬT rồi đó nha~" if new_state else "Uhe~ Speedrun mode đã TẮT rồi đó nha~"
-        )
+        result = await affection.toggle_speedrun(message.author.id)
+        if result["state"]:
+            lines = ["Uhe~ Speedrun mode đã BẬT rồi đó nha~"]
+            if result.get("bond_raised"):
+                lines.append(
+                    f"Bond của Sensei đã được nâng lên mốc {int(config.SPEEDRUN_BOND_START)} "
+                    f"(từ {result['bond_before']:.1f})."
+                )
+            else:
+                lines.append(f"Bond hiện tại {result['bond']:.1f} giữ nguyên.")
+            if result.get("bonus_applied"):
+                lines.append(
+                    f"Lust nền +{int(config.SPEEDRUN_LUST_BONUS)} "
+                    f"(lv{result['lust_before']} → lv{result['lust_after']})."
+                )
+            lines.append(
+                f"Từ giờ Bond tăng nhanh hơn (x{config.SPEEDRUN_BOND_MULT}) và ngưỡng Bond cho phép "
+                f"chủ động 18+ hạ xuống {int(config.SPEEDRUN_NSFW_BOND_THRESHOLD)}."
+            )
+            lines.append(
+                "Lưu ý: tắt speedrun **KHÔNG** làm giảm Bond/Lust đã có — phần đã tăng là không thể hoàn tác, "
+                "tắt chỉ ngừng việc tăng nhanh thôi nha."
+            )
+        else:
+            lines = [
+                "Uhe~ Speedrun mode đã TẮT rồi đó nha~",
+                "Bond và Lust Sensei đã có vẫn giữ nguyên, không bị giảm đâu — chỉ là hết tăng nhanh thôi.",
+            ]
+        await message.channel.send("\n".join(lines))
         return True
 
     if lowered in ("affection", "mood", "bond"):
